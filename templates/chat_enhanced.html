@@ -1,0 +1,1340 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AroBot - AI Medical Assistant</title>
+    <link
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
+      rel="stylesheet"
+    />
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          sans-serif;
+        background: #f7f7f8;
+        color: #343541;
+        height: 100vh;
+        overflow: hidden;
+      }
+
+      .app-container {
+        display: flex;
+        height: 100vh;
+      }
+
+      /* Sidebar */
+      .sidebar {
+        width: 280px;
+        background: #202123;
+        color: white;
+        display: flex;
+        flex-direction: column;
+        transition: all 0.3s ease;
+      }
+
+      .sidebar-header {
+        padding: 16px;
+        border-bottom: 1px solid #444654;
+      }
+
+      .new-chat-btn {
+        width: 100%;
+        padding: 12px 16px;
+        background: transparent;
+        border: 1px solid #565869;
+        color: white;
+        border-radius: 6px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 14px;
+        transition: all 0.2s;
+      }
+
+      .new-chat-btn:hover {
+        background: #40414f;
+      }
+
+      .sidebar-content {
+        flex: 1;
+        padding: 16px 0;
+        overflow-y: auto;
+      }
+
+      .section-title {
+        padding: 8px 16px;
+        font-size: 12px;
+        font-weight: 600;
+        color: #8e8ea0;
+        text-transform: uppercase;
+        margin-bottom: 8px;
+      }
+
+      .chat-item {
+        padding: 12px 16px;
+        cursor: pointer;
+        border-radius: 6px;
+        margin: 4px 8px;
+        transition: all 0.2s;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        font-size: 14px;
+      }
+
+      .chat-item:hover {
+        background: #40414f;
+      }
+
+      .chat-item.active {
+        background: #565869;
+      }
+
+      .chat-item-text {
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .index-item {
+        padding: 8px 16px;
+        margin: 2px 8px;
+        background: #40414f;
+        border-radius: 4px;
+        font-size: 12px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        border: 1px solid #565869;
+      }
+
+      .index-status {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #10b981;
+      }
+
+      .add-index-btn {
+        margin: 8px;
+        padding: 8px 12px;
+        background: #10b981;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 12px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .add-index-btn:hover {
+        background: #059669;
+      }
+
+      /* Main Content */
+      .main-content {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        background: white;
+      }
+
+      .chat-header {
+        padding: 16px 24px;
+        border-bottom: 1px solid #e5e5e7;
+        background: white;
+        display: flex;
+        align-items: center;
+        justify-content: between;
+      }
+
+      .chat-title {
+        font-size: 16px;
+        font-weight: 600;
+        color: #202123;
+      }
+
+      .chat-messages {
+        flex: 1;
+        overflow-y: auto;
+        padding: 24px;
+        background: #f7f7f8;
+      }
+
+      .message {
+        max-width: 800px;
+        margin: 0 auto 24px;
+        display: flex;
+        gap: 16px;
+      }
+
+      .message.user {
+        flex-direction: row-reverse;
+      }
+
+      .message-avatar {
+        width: 32px;
+        height: 32px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 14px;
+        flex-shrink: 0;
+      }
+
+      .message.user .message-avatar {
+        background: #19c37d;
+        color: white;
+      }
+
+      .message.assistant .message-avatar {
+        background: #ab68ff;
+        color: white;
+      }
+
+      .message-content {
+        flex: 1;
+        background: white;
+        padding: 16px 20px;
+        border-radius: 16px;
+        border: 1px solid #e5e5e7;
+        position: relative;
+        line-height: 1.6;
+      }
+
+      .message.user .message-content {
+        background: #f7f7f8;
+        border-color: #d1d5db;
+      }
+
+      .message-actions {
+        position: absolute;
+        top: 8px;
+        right: 12px;
+        opacity: 0;
+        transition: opacity 0.2s;
+      }
+
+      .message-content:hover .message-actions {
+        opacity: 1;
+      }
+
+      .copy-btn {
+        background: transparent;
+        border: none;
+        cursor: pointer;
+        padding: 4px;
+        border-radius: 4px;
+        color: #666;
+        font-size: 12px;
+      }
+
+      .copy-btn:hover {
+        background: #f0f0f0;
+        color: #333;
+      }
+
+      .typing-indicator {
+        display: none;
+        align-items: center;
+        gap: 12px;
+        max-width: 800px;
+        margin: 0 auto;
+        padding: 16px 0;
+      }
+
+      .typing-indicator.show {
+        display: flex;
+      }
+
+      .typing-dots {
+        display: flex;
+        gap: 4px;
+      }
+
+      .typing-dots span {
+        width: 8px;
+        height: 8px;
+        background: #d1d5db;
+        border-radius: 50%;
+        animation: typing 1.4s ease-in-out infinite both;
+      }
+
+      .typing-dots span:nth-child(1) {
+        animation-delay: -0.32s;
+      }
+      .typing-dots span:nth-child(2) {
+        animation-delay: -0.16s;
+      }
+
+      @keyframes typing {
+        0%,
+        80%,
+        100% {
+          transform: scale(0.7);
+          opacity: 0.5;
+        }
+        40% {
+          transform: scale(1);
+          opacity: 1;
+        }
+      }
+
+      /* Input Area */
+      .input-container {
+        padding: 24px;
+        background: white;
+        border-top: 1px solid #e5e5e7;
+      }
+
+      .input-wrapper {
+        max-width: 800px;
+        margin: 0 auto;
+        position: relative;
+      }
+
+      .upload-preview {
+        background: #f0f9ff;
+        border: 1px solid #0ea5e9;
+        border-radius: 8px;
+        padding: 12px 16px;
+        margin-bottom: 12px;
+        display: none;
+        align-items: center;
+        gap: 12px;
+        color: #0369a1;
+        font-size: 14px;
+      }
+
+      .upload-preview.show {
+        display: flex;
+      }
+
+      .upload-preview .remove-btn {
+        background: transparent;
+        border: none;
+        color: #dc2626;
+        cursor: pointer;
+        padding: 4px;
+        border-radius: 4px;
+        margin-left: auto;
+      }
+
+      .upload-preview .remove-btn:hover {
+        background: rgba(220, 38, 38, 0.1);
+      }
+
+      .input-box {
+        display: flex;
+        align-items: flex-end;
+        background: white;
+        border: 1px solid #d1d5db;
+        border-radius: 12px;
+        padding: 12px;
+        gap: 8px;
+        transition: border-color 0.2s;
+      }
+
+      .input-box:focus-within {
+        border-color: #10b981;
+        box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.1);
+      }
+
+      .message-input {
+        flex: 1;
+        border: none;
+        outline: none;
+        resize: none;
+        font-size: 16px;
+        line-height: 1.5;
+        max-height: 120px;
+        min-height: 24px;
+        background: transparent;
+      }
+
+      .input-actions {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+
+      .action-btn {
+        width: 32px;
+        height: 32px;
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 14px;
+        transition: all 0.2s;
+        background: #f3f4f6;
+        color: #6b7280;
+      }
+
+      .action-btn:hover {
+        background: #e5e7eb;
+        color: #374151;
+      }
+
+      .send-btn {
+        background: #10b981;
+        color: white;
+      }
+
+      .send-btn:hover:not(:disabled) {
+        background: #059669;
+      }
+
+      .send-btn:disabled {
+        background: #d1d5db;
+        cursor: not-allowed;
+      }
+
+      .file-input {
+        display: none;
+      }
+
+      /* Responsive */
+      @media (max-width: 768px) {
+        .sidebar {
+          width: 260px;
+          transform: translateX(-100%);
+          position: fixed;
+          height: 100vh;
+          z-index: 1000;
+        }
+
+        .sidebar.open {
+          transform: translateX(0);
+        }
+
+        .main-content {
+          width: 100%;
+        }
+
+        .chat-messages {
+          padding: 16px;
+        }
+
+        .input-container {
+          padding: 16px;
+        }
+      }
+
+      /* Welcome Screen */
+      .welcome-screen {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 100%;
+        text-align: center;
+        padding: 24px;
+      }
+
+      .welcome-title {
+        font-size: 32px;
+        font-weight: 600;
+        color: #202123;
+        margin-bottom: 16px;
+      }
+
+      .welcome-subtitle {
+        font-size: 16px;
+        color: #6b7280;
+        margin-bottom: 32px;
+        max-width: 600px;
+      }
+
+      .capability-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+        gap: 16px;
+        max-width: 800px;
+        width: 100%;
+      }
+
+      .capability-card {
+        background: white;
+        border: 1px solid #e5e5e7;
+        border-radius: 12px;
+        padding: 20px;
+        text-align: left;
+      }
+
+      .capability-icon {
+        width: 32px;
+        height: 32px;
+        background: #f0f9ff;
+        border-radius: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: #0369a1;
+        margin-bottom: 12px;
+      }
+
+      .capability-title {
+        font-size: 16px;
+        font-weight: 600;
+        color: #202123;
+        margin-bottom: 8px;
+      }
+
+      .capability-desc {
+        font-size: 14px;
+        color: #6b7280;
+        line-height: 1.5;
+      }
+
+      /* Modal for Index Creation */
+      .modal {
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.5);
+        z-index: 2000;
+        justify-content: center;
+        align-items: center;
+      }
+
+      .modal.show {
+        display: flex;
+      }
+
+      .modal-content {
+        background: white;
+        border-radius: 12px;
+        padding: 24px;
+        width: 90%;
+        max-width: 500px;
+      }
+
+      .modal-title {
+        font-size: 18px;
+        font-weight: 600;
+        margin-bottom: 16px;
+        color: #202123;
+      }
+
+      .form-group {
+        margin-bottom: 16px;
+      }
+
+      .form-label {
+        display: block;
+        font-size: 14px;
+        font-weight: 500;
+        color: #374151;
+        margin-bottom: 6px;
+      }
+
+      .form-input {
+        width: 100%;
+        padding: 8px 12px;
+        border: 1px solid #d1d5db;
+        border-radius: 6px;
+        font-size: 14px;
+      }
+
+      .form-input:focus {
+        outline: none;
+        border-color: #10b981;
+        box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.1);
+      }
+
+      .modal-actions {
+        display: flex;
+        gap: 12px;
+        justify-content: flex-end;
+      }
+
+      .btn {
+        padding: 8px 16px;
+        border-radius: 6px;
+        font-size: 14px;
+        cursor: pointer;
+        border: none;
+        transition: all 0.2s;
+      }
+
+      .btn-secondary {
+        background: #f3f4f6;
+        color: #374151;
+      }
+
+      .btn-secondary:hover {
+        background: #e5e7eb;
+      }
+
+      .btn-primary {
+        background: #10b981;
+        color: white;
+      }
+
+      .btn-primary:hover {
+        background: #059669;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app-container">
+      <!-- Sidebar -->
+      <div class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+          <button class="new-chat-btn" onclick="createNewChat()">
+            <i class="fas fa-plus"></i>
+            New Chat
+          </button>
+        </div>
+
+        <div class="sidebar-content">
+          <!-- Chat Sessions -->
+          <div class="section-title">Recent Chats</div>
+          <div id="chatSessions">
+            <!-- Chat sessions will be populated here -->
+          </div>
+
+          <!-- Vector Indexes -->
+          <div class="section-title" style="margin-top: 24px">
+            Vector Indexes
+          </div>
+          <div id="vectorIndexes">
+            <!-- Vector indexes will be populated here -->
+          </div>
+          <button class="add-index-btn" onclick="showCreateIndexModal()">
+            <i class="fas fa-plus"></i>
+            Add PDF to New Index
+          </button>
+        </div>
+      </div>
+
+      <!-- Main Content -->
+      <div class="main-content">
+        <div class="chat-header">
+          <div class="chat-title" id="chatTitle">
+            AroBot - AI Medical Assistant
+          </div>
+        </div>
+
+        <div class="chat-messages" id="chatMessages">
+          <div class="welcome-screen" id="welcomeScreen">
+            <div class="welcome-title">👋 Welcome to AroBot</div>
+            <div class="welcome-subtitle">
+              Your advanced AI medical assistant powered by cutting-edge
+              technology
+            </div>
+            <div class="capability-grid">
+              <div class="capability-card">
+                <div class="capability-icon">
+                  <i class="fas fa-prescription-bottle-medical"></i>
+                </div>
+                <div class="capability-title">Prescription Analysis</div>
+                <div class="capability-desc">
+                  Upload prescription images for detailed OCR analysis and
+                  medical insights
+                </div>
+              </div>
+              <div class="capability-card">
+                <div class="capability-icon">
+                  <i class="fas fa-file-pdf"></i>
+                </div>
+                <div class="capability-title">PDF Knowledge Base</div>
+                <div class="capability-desc">
+                  Upload medical documents and create searchable knowledge bases
+                </div>
+              </div>
+              <div class="capability-card">
+                <div class="capability-icon">
+                  <i class="fas fa-brain"></i>
+                </div>
+                <div class="capability-title">AI Medical Consultation</div>
+                <div class="capability-desc">
+                  Get intelligent responses about medical conditions and
+                  treatments
+                </div>
+              </div>
+              <div class="capability-card">
+                <div class="capability-icon">
+                  <i class="fas fa-search"></i>
+                </div>
+                <div class="capability-title">Web-Enhanced Answers</div>
+                <div class="capability-desc">
+                  Real-time web search for current medical information and
+                  general queries
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Typing Indicator -->
+        <div class="typing-indicator" id="typingIndicator">
+          <div class="message-avatar">
+            <i class="fas fa-robot"></i>
+          </div>
+          <span>AroBot is thinking</span>
+          <div class="typing-dots">
+            <span></span>
+            <span></span>
+            <span></span>
+          </div>
+        </div>
+
+        <!-- Input Container -->
+        <div class="input-container">
+          <div class="input-wrapper">
+            <div class="upload-preview" id="uploadPreview">
+              <i class="fas fa-file" id="fileIcon"></i>
+              <span id="fileName">File selected</span>
+              <button class="remove-btn" onclick="removeFile()">
+                <i class="fas fa-times"></i>
+              </button>
+            </div>
+
+            <div class="input-box">
+              <textarea
+                class="message-input"
+                id="messageInput"
+                placeholder="Ask about medical conditions, upload prescriptions, or any general question..."
+                rows="1"
+              ></textarea>
+
+              <div class="input-actions">
+                <button
+                  class="action-btn"
+                  onclick="document.getElementById('imageInput').click()"
+                  title="Upload Image"
+                >
+                  <i class="fas fa-image"></i>
+                </button>
+                <button
+                  class="action-btn"
+                  onclick="document.getElementById('pdfInput').click()"
+                  title="Upload PDF"
+                >
+                  <i class="fas fa-file-pdf"></i>
+                </button>
+                <button
+                  class="action-btn send-btn"
+                  id="sendButton"
+                  onclick="sendMessage()"
+                  title="Send Message"
+                >
+                  <i class="fas fa-paper-plane"></i>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Create Index Modal -->
+    <div class="modal" id="createIndexModal">
+      <div class="modal-content">
+        <div class="modal-title">Create New Vector Index</div>
+        <div class="form-group">
+          <label class="form-label" for="indexName">Index Name</label>
+          <input
+            type="text"
+            class="form-input"
+            id="indexName"
+            placeholder="e.g., cardiology-research"
+          />
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="pdfFile">Select PDF File</label>
+          <input type="file" class="form-input" id="pdfFile" accept=".pdf" />
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="indexDescription"
+            >Description (Optional)</label
+          >
+          <input
+            type="text"
+            class="form-input"
+            id="indexDescription"
+            placeholder="Brief description of the content"
+          />
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-secondary" onclick="hideCreateIndexModal()">
+            Cancel
+          </button>
+          <button class="btn btn-primary" onclick="createVectorIndex()">
+            Create Index
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Hidden file inputs -->
+    <input
+      type="file"
+      id="imageInput"
+      class="file-input"
+      accept="image/*"
+      onchange="handleFileSelect(this, 'image')"
+    />
+    <input
+      type="file"
+      id="pdfInput"
+      class="file-input"
+      accept=".pdf"
+      onchange="handleFileSelect(this, 'pdf')"
+    />
+
+    <script>
+      // Global state
+      let currentFile = null;
+      let currentSessionId = generateSessionId();
+      let chatSessions = JSON.parse(
+        localStorage.getItem("arobot_chat_sessions") || "[]"
+      );
+      let vectorIndexes = [];
+
+      function generateSessionId() {
+        return (
+          "session_" +
+          Math.random().toString(36).substr(2, 9) +
+          "_" +
+          Date.now()
+        );
+      }
+
+      // Initialize the application
+      async function initializeApp() {
+        await loadChatSessions();
+        await loadVectorIndexes();
+        await initializeSession();
+        setupEventListeners();
+      }
+
+      function setupEventListeners() {
+        // Auto-resize textarea
+        document
+          .getElementById("messageInput")
+          .addEventListener("input", function () {
+            this.style.height = "auto";
+            this.style.height = Math.min(this.scrollHeight, 120) + "px";
+          });
+
+        // Enter to send (Shift+Enter for new line)
+        document
+          .getElementById("messageInput")
+          .addEventListener("keydown", function (e) {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              sendMessage();
+            }
+          });
+      }
+
+      async function loadChatSessions() {
+        const sessionsContainer = document.getElementById("chatSessions");
+        if (chatSessions.length === 0) {
+          sessionsContainer.innerHTML =
+            '<div style="padding: 8px 16px; color: #8e8ea0; font-size: 12px;">No previous chats</div>';
+          return;
+        }
+
+        sessionsContainer.innerHTML = chatSessions
+          .map(
+            (session) => `
+                <div class="chat-item ${
+                  session.id === currentSessionId ? "active" : ""
+                }" onclick="switchToSession('${session.id}')">
+                    <div class="chat-item-text">${session.title}</div>
+                    <small style="color: #8e8ea0;">${new Date(
+                      session.lastActive
+                    ).toLocaleDateString()}</small>
+                </div>
+            `
+          )
+          .join("");
+      }
+
+      async function loadVectorIndexes() {
+        try {
+          // Fetch indexes from the backend
+          const response = await fetch("/api/v1/vector/indexes");
+          if (response.ok) {
+            const data = await response.json();
+            if (data.status === "success") {
+              vectorIndexes = data.indexes;
+            } else {
+              console.error("Error loading indexes:", data.error);
+              // Fallback to default indexes
+              vectorIndexes = [
+                {
+                  name: "arobot-medical-pdfs",
+                  status: "active",
+                  total_vector_count: 1,
+                },
+                {
+                  name: "arobot-medicine-data",
+                  status: "active",
+                  total_vector_count: 21712,
+                },
+              ];
+            }
+          } else {
+            // Fallback to default indexes if API fails
+            vectorIndexes = [
+              {
+                name: "arobot-medical-pdfs",
+                status: "active",
+                total_vector_count: 1,
+              },
+              {
+                name: "arobot-medicine-data",
+                status: "active",
+                total_vector_count: 21712,
+              },
+            ];
+          }
+
+          const indexesContainer = document.getElementById("vectorIndexes");
+          indexesContainer.innerHTML = vectorIndexes
+            .map(
+              (index) => `
+                     <div class="index-item">
+                         <div>
+                             <div style="font-weight: 500;">${index.name}</div>
+                             <div style="color: #8e8ea0; font-size: 11px;">${
+                               index.total_vector_count || index.documents || 0
+                             } vectors</div>
+                         </div>
+                         <div class="index-status" style="background: ${
+                           index.status === "ready" || index.status === "active"
+                             ? "#10b981"
+                             : "#f59e0b"
+                         };"></div>
+                     </div>
+                 `
+            )
+            .join("");
+        } catch (error) {
+          console.error("Error loading vector indexes:", error);
+          // Fallback to default display
+          const indexesContainer = document.getElementById("vectorIndexes");
+          indexesContainer.innerHTML = `
+             <div style="padding: 8px 16px; color: #8e8ea0; font-size: 12px;">
+               Error loading indexes. Please refresh the page.
+             </div>
+           `;
+        }
+      }
+
+      function createNewChat() {
+        // Save current session if it has messages
+        const currentMessages =
+          document.getElementById("chatMessages").children;
+        if (currentMessages.length > 1) {
+          // More than just welcome screen
+          saveChatSession();
+        }
+
+        // Create new session
+        currentSessionId = generateSessionId();
+        clearChatMessages();
+        showWelcomeScreen();
+        initializeSession();
+        loadChatSessions();
+      }
+
+      function switchToSession(sessionId) {
+        // Save current session
+        if (currentSessionId !== sessionId) {
+          saveChatSession();
+        }
+
+        currentSessionId = sessionId;
+        loadChatSession(sessionId);
+        loadChatSessions();
+      }
+
+      function saveChatSession() {
+        const messages = document.getElementById("chatMessages");
+        const messageElements = messages.querySelectorAll(".message");
+
+        if (messageElements.length === 0) return;
+
+        // Get first user message as title
+        let title = "New Chat";
+        const firstUserMessage = messages.querySelector(
+          ".message.user .message-content"
+        );
+        if (firstUserMessage) {
+          title =
+            firstUserMessage.textContent.slice(0, 50) +
+            (firstUserMessage.textContent.length > 50 ? "..." : "");
+        }
+
+        // Update or add session
+        const existingIndex = chatSessions.findIndex(
+          (s) => s.id === currentSessionId
+        );
+        const sessionData = {
+          id: currentSessionId,
+          title: title,
+          lastActive: Date.now(),
+          messages: Array.from(messageElements).map((msg) => ({
+            type: msg.classList.contains("user") ? "user" : "assistant",
+            content: msg.querySelector(".message-content").innerHTML,
+          })),
+        };
+
+        if (existingIndex >= 0) {
+          chatSessions[existingIndex] = sessionData;
+        } else {
+          chatSessions.unshift(sessionData);
+        }
+
+        // Keep only last 50 sessions
+        chatSessions = chatSessions.slice(0, 50);
+        localStorage.setItem(
+          "arobot_chat_sessions",
+          JSON.stringify(chatSessions)
+        );
+      }
+
+      function loadChatSession(sessionId) {
+        const session = chatSessions.find((s) => s.id === sessionId);
+        if (!session) return;
+
+        clearChatMessages();
+
+        session.messages.forEach((msg) => {
+          addMessageToUI(msg.type, msg.content, false);
+        });
+      }
+
+      function clearChatMessages() {
+        const container = document.getElementById("chatMessages");
+        container.innerHTML = "";
+        hideWelcomeScreen();
+      }
+
+      function showWelcomeScreen() {
+        const welcomeScreen = document.getElementById("welcomeScreen");
+        if (welcomeScreen) {
+          welcomeScreen.style.display = "flex";
+        }
+      }
+
+      function hideWelcomeScreen() {
+        const welcomeScreen = document.getElementById("welcomeScreen");
+        if (welcomeScreen) {
+          welcomeScreen.style.display = "none";
+        }
+      }
+
+      function handleFileSelect(input, type) {
+        const file = input.files[0];
+        if (file) {
+          currentFile = { file: file, type: type };
+          document.getElementById("fileName").textContent = file.name;
+
+          // Update icon based on file type
+          const icon = document.getElementById("fileIcon");
+          if (type === "pdf") {
+            icon.className = "fas fa-file-pdf";
+            icon.style.color = "#dc2626";
+          } else {
+            icon.className = "fas fa-image";
+            icon.style.color = "#0ea5e9";
+          }
+
+          document.getElementById("uploadPreview").classList.add("show");
+        }
+      }
+
+      function removeFile() {
+        currentFile = null;
+        document.getElementById("uploadPreview").classList.remove("show");
+        document.getElementById("imageInput").value = "";
+        document.getElementById("pdfInput").value = "";
+      }
+
+      function addMessageToUI(sender, content, animate = true) {
+        hideWelcomeScreen();
+
+        const messagesContainer = document.getElementById("chatMessages");
+        const messageDiv = document.createElement("div");
+        messageDiv.className = `message ${sender}`;
+
+        const avatarIcon = sender === "user" ? "fas fa-user" : "fas fa-robot";
+        const copyButton = `
+                <div class="message-actions">
+                    <button class="copy-btn" onclick="copyMessage(this)" title="Copy message">
+                        <i class="fas fa-copy"></i>
+                    </button>
+                </div>
+            `;
+
+        messageDiv.innerHTML = `
+                <div class="message-avatar">
+                    <i class="${avatarIcon}"></i>
+                </div>
+                <div class="message-content">
+                    ${content}
+                    ${copyButton}
+                </div>
+            `;
+
+        messagesContainer.appendChild(messageDiv);
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+
+        if (animate) {
+          messageDiv.style.opacity = "0";
+          messageDiv.style.transform = "translateY(10px)";
+          requestAnimationFrame(() => {
+            messageDiv.style.transition = "all 0.3s ease";
+            messageDiv.style.opacity = "1";
+            messageDiv.style.transform = "translateY(0)";
+          });
+        }
+      }
+
+      function copyMessage(button) {
+        const messageContent = button.closest(".message-content");
+        const textToCopy = messageContent.textContent.trim();
+
+        navigator.clipboard.writeText(textToCopy).then(() => {
+          const icon = button.querySelector("i");
+          icon.className = "fas fa-check";
+          setTimeout(() => {
+            icon.className = "fas fa-copy";
+          }, 2000);
+        });
+      }
+
+      function showTyping() {
+        document.getElementById("typingIndicator").classList.add("show");
+        const messagesContainer = document.getElementById("chatMessages");
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+      }
+
+      function hideTyping() {
+        document.getElementById("typingIndicator").classList.remove("show");
+      }
+
+      async function sendMessage() {
+        const messageInput = document.getElementById("messageInput");
+        const sendButton = document.getElementById("sendButton");
+        const message = messageInput.value.trim();
+
+        if (!message && !currentFile) return;
+
+        // Disable send button
+        sendButton.disabled = true;
+
+        // Add user message
+        if (message) {
+          addMessageToUI("user", message);
+        }
+
+        if (currentFile) {
+          addMessageToUI("user", `📎 Uploaded: ${currentFile.file.name}`);
+        }
+
+        // Clear input
+        messageInput.value = "";
+        messageInput.style.height = "auto";
+
+        // Show typing indicator
+        showTyping();
+
+        try {
+          let response;
+
+          if (currentFile && currentFile.type === "image") {
+            // Handle image upload
+            const formData = new FormData();
+            formData.append("file", currentFile.file);
+            if (message) formData.append("query", message);
+            formData.append("session_id", currentSessionId);
+
+            response = await fetch("/api/v1/prescription/upload", {
+              method: "POST",
+              body: formData,
+            });
+          } else if (currentFile && currentFile.type === "pdf") {
+            // Handle PDF upload
+            const formData = new FormData();
+            formData.append("file", currentFile.file);
+            if (message) formData.append("description", message);
+            formData.append("session_id", currentSessionId);
+
+            response = await fetch("/api/v1/pdf/upload", {
+              method: "POST",
+              body: formData,
+            });
+          } else {
+            // Handle text message
+            response = await fetch("/api/v1/chat", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                message: message,
+                session_id: currentSessionId,
+                use_web_search: true, // Enable web search for general questions
+              }),
+            });
+          }
+
+          hideTyping();
+
+          if (response.ok) {
+            const data = await response.json();
+            let responseMessage =
+              data.response ||
+              data.analysis ||
+              data.message ||
+              "I received your message.";
+
+            // Add additional info for successful uploads
+            if (data.chunks_processed) {
+              responseMessage += `\n\n📊 Processed ${data.chunks_processed} text chunks from the document.`;
+            }
+
+            addMessageToUI("assistant", responseMessage);
+
+            // Auto-save session after each exchange
+            setTimeout(() => saveChatSession(), 1000);
+          } else {
+            const errorData = await response.json().catch(() => ({}));
+            addMessageToUI(
+              "assistant",
+              `❌ ${
+                errorData.detail ||
+                "Sorry, I encountered an error. Please try again."
+              }`
+            );
+          }
+        } catch (error) {
+          hideTyping();
+          addMessageToUI(
+            "assistant",
+            "❌ Connection error. Please check your internet connection and try again."
+          );
+          console.error("Error:", error);
+        }
+
+        // Reset
+        removeFile();
+        sendButton.disabled = false;
+        messageInput.focus();
+      }
+
+      // Vector Index Management
+      function showCreateIndexModal() {
+        document.getElementById("createIndexModal").classList.add("show");
+      }
+
+      function hideCreateIndexModal() {
+        document.getElementById("createIndexModal").classList.remove("show");
+        // Clear form
+        document.getElementById("indexName").value = "";
+        document.getElementById("pdfFile").value = "";
+        document.getElementById("indexDescription").value = "";
+      }
+
+      async function createVectorIndex() {
+        const indexName = document.getElementById("indexName").value.trim();
+        const pdfFile = document.getElementById("pdfFile").files[0];
+        const description = document
+          .getElementById("indexDescription")
+          .value.trim();
+
+        if (!indexName || !pdfFile) {
+          alert("Please provide both index name and PDF file.");
+          return;
+        }
+
+        try {
+          const formData = new FormData();
+          formData.append("file", pdfFile);
+          formData.append("index_name", `arobot_medical_pdf_${indexName}`);
+          formData.append(
+            "description",
+            description || `PDF index: ${indexName}`
+          );
+
+          const response = await fetch("/api/v1/vector/create-index", {
+            method: "POST",
+            body: formData,
+          });
+
+          if (response.ok) {
+            const result = await response.json();
+            hideCreateIndexModal();
+            addMessageToUI(
+              "assistant",
+              `✅ Successfully created vector index "${indexName}" with ${
+                result.chunks_processed || 0
+              } document chunks.`
+            );
+            // Refresh the index list after creation
+            await loadVectorIndexes();
+          } else {
+            const error = await response.json();
+            alert(`Error creating index: ${error.detail || "Unknown error"}`);
+          }
+        } catch (error) {
+          alert(`Error: ${error.message}`);
+          console.error("Error creating vector index:", error);
+        }
+      }
+
+      // Initialize session
+      async function initializeSession() {
+        try {
+          await fetch("/api/v1/session/create", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              user_id: currentSessionId,
+            }),
+          });
+        } catch (error) {
+          console.error("Failed to initialize session:", error);
+        }
+      }
+
+      // Initialize when page loads
+      window.addEventListener("load", function () {
+        initializeApp();
+        document.getElementById("messageInput").focus();
+      });
+
+      // Save session before page unload
+      window.addEventListener("beforeunload", function () {
+        saveChatSession();
+      });
+    </script>
+  </body>
+</html>
