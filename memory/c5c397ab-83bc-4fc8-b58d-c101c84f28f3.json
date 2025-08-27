@@ -1,0 +1,19 @@
+{
+  "session_id": "c5c397ab-83bc-4fc8-b58d-c101c84f28f3",
+  "user_id": "session_pkjnwe0y3_1756288600006",
+  "created_at": "2025-08-27T15:56:50.492257",
+  "last_activity": "2025-08-27T15:56:50.494260",
+  "messages": [
+    {
+      "id": "6541c2c6-5be0-4060-a7ff-9c8b86f1cb36",
+      "timestamp": "2025-08-27T15:56:50.494260",
+      "role": "system",
+      "content": "AroBot session initialized. I'm ready to help with your medical questions.",
+      "type": "system",
+      "metadata": {}
+    }
+  ],
+  "context": {},
+  "prescription_history": [],
+  "medical_queries": []
+}
