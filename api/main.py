@@ -1,84 +1,73 @@
 """
 FastAPI main application for AroBot Multi-Modal Medical Chatbot
 """
-from fastapi import FastAPI, HTTPException, Request
+import logging
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
-from .routes import router
-from config.env_config import DEBUG, APP_HOST, APP_PORT
-import logging
 
-# Configure logging
+from .routes import router
+from config.env_config import DEBUG, APP_HOST, APP_PORT, TEMPLATES_DIR
+
+# Logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Create FastAPI app
+# App
 app = FastAPI(
     title="AroBot - Multi-Modal Medical Chatbot",
-    description="AI-powered medical assistant with prescription OCR and RAG capabilities",
-    version="1.0.0",
-    debug=DEBUG
+    description="AI-powered medical assistant with prescription OCR, RAG, and vision",
+    version="1.1.0",
+    debug=DEBUG,
 )
 
-# CORS middleware
+# CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
+    allow_origins=["*"],  # tighten for prod
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Static files
+# Static & templates
 app.mount("/static", StaticFiles(directory="static"), name="static")
+templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
-# Templates
-templates = Jinja2Templates(directory="templates")
-
-# Include routes  
+# Routes
 app.include_router(router, prefix="/api/v1")
 
-# Add a redirect from root to chat
+# Root -> chat
 @app.get("/")
-async def redirect_to_chat():
-    """Redirect root to chat interface"""
-    from fastapi.responses import RedirectResponse
+async def root():
     return RedirectResponse(url="/chat")
 
-# Add root-level chat route
+# Top-level chat UI (same page as /api/v1/chat for convenience)
 @app.get("/chat", response_class=HTMLResponse)
 async def root_chat_interface(request: Request):
-    """Serve the enhanced chat interface at root level"""
     return templates.TemplateResponse("chat_enhanced.html", {"request": request})
 
-# API info endpoint
 @app.get("/api")
 async def api_info():
-    """API information endpoint"""
     return {
         "name": "AroBot Multi-Modal Medical Chatbot API",
-        "version": "1.0.0",
-        "description": "AI-powered medical assistant with prescription OCR and RAG capabilities",
+        "version": "1.1.0",
         "endpoints": {
             "health": "/health",
-            "chat": "/chat",
+            "chat_ui": "/chat",
             "api_chat": "/api/v1/chat",
-            "prescription": "/api/v1/prescription",
-            "search": "/api/v1/search"
-        }
+            "prescription": "/api/v1/prescription/upload",
+            "pdf_analyze": "/api/v1/pdf/analyze",
+            "pdf_upload_to_kb": "/api/v1/pdf/upload",
+            "weather": "/api/v1/weather",
+        },
     }
 
-# Health check endpoint
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
-    return {
-        "status": "healthy",
-        "service": "AroBot Medical Chatbot",
-        "version": "1.0.0"
-    }
+    return {"status": "healthy", "service": "AroBot", "version": "1.1.0"}
 
 if __name__ == "__main__":
     import uvicorn

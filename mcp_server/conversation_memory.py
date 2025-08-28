@@ -1,31 +1,31 @@
 """
 Conversation Memory for maintaining chat history and context
 """
+from __future__ import annotations
+
 import json
 import uuid
-from datetime import datetime, timedelta
-from typing import Dict, List, Any, Optional
-from pathlib import Path
 import logging
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Dict, List, Any, Optional
 
 logger = logging.getLogger(__name__)
 
 class ConversationMemory:
-    """Manages conversation memory and context for users"""
-    
+    """Manages conversation memory and context for users (persisted to /memory)"""
+
     def __init__(self, memory_dir: str = "memory"):
         self.memory_dir = Path(memory_dir)
         self.memory_dir.mkdir(exist_ok=True)
-        self.active_sessions = {}
+        self.active_sessions: Dict[str, Dict[str, Any]] = {}
         self.max_memory_days = 30
-    
-    def create_session(self, user_id: str = None) -> str:
-        """Create a new conversation session"""
+
+    # --------- session primitives --------- #
+    def create_session(self, user_id: Optional[str] = None) -> str:
         session_id = str(uuid.uuid4())
-        if not user_id:
-            user_id = f"user_{uuid.uuid4().hex[:8]}"
-        
-        session_data = {
+        user_id = user_id or f"user_{uuid.uuid4().hex[:8]}"
+        data = {
             "session_id": session_id,
             "user_id": user_id,
             "created_at": datetime.now().isoformat(),
@@ -33,249 +33,181 @@ class ConversationMemory:
             "messages": [],
             "context": {},
             "prescription_history": [],
-            "medical_queries": []
+            "medical_queries": [],
         }
-        
-        self.active_sessions[session_id] = session_data
+        self.active_sessions[session_id] = data
         self._save_session(session_id)
-        
         return session_id
-    
-    def add_message(self, session_id: str, role: str, content: str, 
-                   message_type: str = "text", metadata: Dict = None) -> bool:
-        """Add a message to the conversation"""
+
+    def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+        if session_id not in self.active_sessions:
+            self._load_session(session_id)
+        return self.active_sessions.get(session_id)
+
+    # --------- message storage --------- #
+    def add_message(
+        self,
+        session_id: str,
+        role: str,
+        content: str,
+        message_type: str = "text",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
         try:
-            if session_id not in self.active_sessions:
-                self._load_session(session_id)
-            
-            if session_id not in self.active_sessions:
+            session = self.get_session(session_id)
+            if not session:
                 logger.warning(f"Session {session_id} not found")
                 return False
-            
-            message = {
+            msg = {
                 "id": str(uuid.uuid4()),
                 "timestamp": datetime.now().isoformat(),
-                "role": role,  # "user", "assistant", "system"
+                "role": role,
                 "content": content,
-                "type": message_type,  # "text", "image", "prescription"
-                "metadata": metadata or {}
+                "type": message_type,
+                "metadata": metadata or {},
             }
-            
-            self.active_sessions[session_id]["messages"].append(message)
-            self.active_sessions[session_id]["last_activity"] = datetime.now().isoformat()
-            
-            # Keep only recent messages in memory (last 50)
-            if len(self.active_sessions[session_id]["messages"]) > 50:
-                self.active_sessions[session_id]["messages"] = \
-                    self.active_sessions[session_id]["messages"][-50:]
-            
+            session["messages"].append(msg)
+            session["last_activity"] = datetime.now().isoformat()
+            # bound memory
+            if len(session["messages"]) > 60:
+                session["messages"] = session["messages"][-60:]
             self._save_session(session_id)
             return True
-            
         except Exception as e:
             logger.error(f"Error adding message: {e}")
             return False
-    
-    def get_conversation_history(self, session_id: str, limit: int = 20) -> List[Dict]:
-        """Get recent conversation history"""
+
+    def get_conversation_history(self, session_id: str, limit: int = 20) -> List[Dict[str, Any]]:
         try:
-            if session_id not in self.active_sessions:
-                self._load_session(session_id)
-            
-            if session_id not in self.active_sessions:
+            s = self.get_session(session_id)
+            if not s:
                 return []
-            
-            messages = self.active_sessions[session_id]["messages"]
-            return messages[-limit:] if limit else messages
-            
+            msgs = s.get("messages", [])
+            return msgs[-limit:] if limit else msgs
         except Exception as e:
-            logger.error(f"Error getting conversation history: {e}")
+            logger.error(f"Error getting conversation: {e}")
             return []
-    
-    def add_prescription_record(self, session_id: str, prescription_data: Dict) -> bool:
-        """Add prescription analysis to user's history"""
+
+    # --------- prescription & queries --------- #
+    def add_prescription_record(self, session_id: str, prescription_data: Dict[str, Any]) -> bool:
         try:
-            if session_id not in self.active_sessions:
-                self._load_session(session_id)
-            
-            if session_id not in self.active_sessions:
+            s = self.get_session(session_id)
+            if not s:
                 return False
-            
-            prescription_record = {
-                "id": str(uuid.uuid4()),
-                "timestamp": datetime.now().isoformat(),
-                "prescription_data": prescription_data
-            }
-            
-            self.active_sessions[session_id]["prescription_history"].append(prescription_record)
-            
-            # Keep only recent prescriptions (last 10)
-            if len(self.active_sessions[session_id]["prescription_history"]) > 10:
-                self.active_sessions[session_id]["prescription_history"] = \
-                    self.active_sessions[session_id]["prescription_history"][-10:]
-            
+            rec = {"id": str(uuid.uuid4()), "timestamp": datetime.now().isoformat(), "prescription_data": prescription_data}
+            s["prescription_history"].append(rec)
+            if len(s["prescription_history"]) > 12:
+                s["prescription_history"] = s["prescription_history"][-12:]
             self._save_session(session_id)
             return True
-            
         except Exception as e:
-            logger.error(f"Error adding prescription record: {e}")
+            logger.error(f"Error adding prescription: {e}")
             return False
-    
-    def get_prescription_history(self, session_id: str) -> List[Dict]:
-        """Get user's prescription history"""
+
+    def get_prescription_history(self, session_id: str) -> List[Dict[str, Any]]:
         try:
-            if session_id not in self.active_sessions:
-                self._load_session(session_id)
-            
-            if session_id not in self.active_sessions:
+            s = self.get_session(session_id)
+            if not s:
                 return []
-            
-            return self.active_sessions[session_id]["prescription_history"]
-            
+            return s.get("prescription_history", [])
         except Exception as e:
-            logger.error(f"Error getting prescription history: {e}")
+            logger.error(f"Error reading prescription history: {e}")
             return []
-    
-    def add_medical_query(self, session_id: str, query: str, response: str, 
-                         query_type: str = "general") -> bool:
-        """Add medical query to history"""
+
+    def add_medical_query(self, session_id: str, query: str, response: str, query_type: str = "general") -> bool:
         try:
-            if session_id not in self.active_sessions:
-                self._load_session(session_id)
-            
-            if session_id not in self.active_sessions:
+            s = self.get_session(session_id)
+            if not s:
                 return False
-            
-            query_record = {
+            rec = {
                 "id": str(uuid.uuid4()),
                 "timestamp": datetime.now().isoformat(),
                 "query": query,
                 "response": response,
-                "type": query_type
+                "type": query_type,
             }
-            
-            self.active_sessions[session_id]["medical_queries"].append(query_record)
-            
-            # Keep only recent queries (last 20)
-            if len(self.active_sessions[session_id]["medical_queries"]) > 20:
-                self.active_sessions[session_id]["medical_queries"] = \
-                    self.active_sessions[session_id]["medical_queries"][-20:]
-            
+            s["medical_queries"].append(rec)
+            if len(s["medical_queries"]) > 40:
+                s["medical_queries"] = s["medical_queries"][-40:]
             self._save_session(session_id)
             return True
-            
         except Exception as e:
-            logger.error(f"Error adding medical query: {e}")
+            logger.error(f"Error adding query: {e}")
             return False
-    
+
+    # --------- summaries --------- #
     def get_context_summary(self, session_id: str) -> Dict[str, Any]:
-        """Get summarized context for the session"""
         try:
-            if session_id not in self.active_sessions:
-                self._load_session(session_id)
-            
-            if session_id not in self.active_sessions:
+            s = self.get_session(session_id)
+            if not s:
                 return {}
-            
-            session = self.active_sessions[session_id]
-            
-            summary = {
+            return {
                 "session_id": session_id,
-                "user_id": session.get("user_id"),
-                "created_at": session.get("created_at"),
-                "last_activity": session.get("last_activity"),
-                "message_count": len(session.get("messages", [])),
-                "prescription_count": len(session.get("prescription_history", [])),
-                "query_count": len(session.get("medical_queries", [])),
-                "recent_topics": self._extract_recent_topics(session)
+                "user_id": s.get("user_id"),
+                "created_at": s.get("created_at"),
+                "last_activity": s.get("last_activity"),
+                "message_count": len(s.get("messages", [])),
+                "prescription_count": len(s.get("prescription_history", [])),
+                "query_count": len(s.get("medical_queries", [])),
+                "recent_topics": self._extract_recent_topics(s),
             }
-            
-            return summary
-            
         except Exception as e:
-            logger.error(f"Error getting context summary: {e}")
+            logger.error(f"Error summarizing context: {e}")
             return {}
-    
-    def _extract_recent_topics(self, session: Dict) -> List[str]:
-        """Extract recent topics from conversation"""
-        topics = []
-        recent_messages = session.get("messages", [])[-10:]
-        
-        for message in recent_messages:
-            if message.get("role") == "user":
-                content = message.get("content", "").lower()
-                # Simple keyword extraction
-                medical_keywords = [
-                    "prescription", "medicine", "medication", "doctor", "treatment",
-                    "symptoms", "pain", "disease", "diagnosis", "therapy"
-                ]
-                
-                for keyword in medical_keywords:
-                    if keyword in content and keyword not in topics:
-                        topics.append(keyword)
-        
-        return topics[:5]  # Return top 5 topics
-    
+
+    def _extract_recent_topics(self, session: Dict[str, Any]) -> List[str]:
+        topics: List[str] = []
+        for m in session.get("messages", [])[-12:]:
+            if m.get("role") == "user":
+                t = (m.get("content") or "").lower()
+                for kw in ["prescription", "medicine", "medication", "treatment", "symptom", "diagnosis", "therapy"]:
+                    if kw in t and kw not in topics:
+                        topics.append(kw)
+        return topics[:5]
+
+    # --------- persistence --------- #
     def _save_session(self, session_id: str) -> bool:
-        """Save session to disk"""
         try:
-            if session_id not in self.active_sessions:
+            s = self.active_sessions.get(session_id)
+            if not s:
                 return False
-            
-            session_file = self.memory_dir / f"{session_id}.json"
-            with open(session_file, 'w', encoding='utf-8') as f:
-                json.dump(self.active_sessions[session_id], f, indent=2, ensure_ascii=False)
-            
+            f = self.memory_dir / f"{session_id}.json"
+            with open(f, "w", encoding="utf-8") as out:
+                json.dump(s, out, indent=2, ensure_ascii=False)
             return True
-            
         except Exception as e:
-            logger.error(f"Error saving session: {e}")
+            logger.error(f"Save error: {e}")
             return False
-    
+
     def _load_session(self, session_id: str) -> bool:
-        """Load session from disk"""
         try:
-            session_file = self.memory_dir / f"{session_id}.json"
-            if not session_file.exists():
+            f = self.memory_dir / f"{session_id}.json"
+            if not f.exists():
                 return False
-            
-            with open(session_file, 'r', encoding='utf-8') as f:
-                session_data = json.load(f)
-            
-            self.active_sessions[session_id] = session_data
+            with open(f, "r", encoding="utf-8") as src:
+                self.active_sessions[session_id] = json.load(src)
             return True
-            
         except Exception as e:
-            logger.error(f"Error loading session: {e}")
+            logger.error(f"Load error: {e}")
             return False
-    
+
     def cleanup_old_sessions(self) -> int:
-        """Clean up old session files"""
         try:
-            cutoff_date = datetime.now() - timedelta(days=self.max_memory_days)
-            cleaned_count = 0
-            
-            for session_file in self.memory_dir.glob("*.json"):
+            cutoff = datetime.now() - timedelta(days=self.max_memory_days)
+            n = 0
+            for f in self.memory_dir.glob("*.json"):
                 try:
-                    with open(session_file, 'r') as f:
-                        session_data = json.load(f)
-                    
-                    last_activity = datetime.fromisoformat(
-                        session_data.get("last_activity", "1970-01-01T00:00:00")
-                    )
-                    
-                    if last_activity < cutoff_date:
-                        session_file.unlink()
-                        session_id = session_file.stem
-                        if session_id in self.active_sessions:
-                            del self.active_sessions[session_id]
-                        cleaned_count += 1
-                        
+                    with open(f, "r", encoding="utf-8") as src:
+                        s = json.load(src)
+                    last = datetime.fromisoformat(s.get("last_activity", "1970-01-01T00:00:00"))
+                    if last < cutoff:
+                        f.unlink()
+                        sid = f.stem
+                        self.active_sessions.pop(sid, None)
+                        n += 1
                 except Exception as e:
-                    logger.warning(f"Error processing session file {session_file}: {e}")
-            
-            return cleaned_count
-            
+                    logger.warning(f"Cleanup skip {f}: {e}")
+            return n
         except Exception as e:
-            logger.error(f"Error cleaning up old sessions: {e}")
+            logger.error(f"Cleanup error: {e}")
             return 0

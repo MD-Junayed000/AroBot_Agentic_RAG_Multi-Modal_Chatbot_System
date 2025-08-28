@@ -13,7 +13,7 @@ def load_pdfs(folder):
     return docs
 
 if __name__=="__main__":
-    store = PineconeStore(dim=1024)
+    store = PineconeStore(dimension=384)
     folder = "knowledge/pdfs"
     docs = load_pdfs(folder)
     print("Loaded pages:", len(docs))

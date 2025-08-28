@@ -1,0 +1,138 @@
+{
+  "session_id": "426c2552-a34a-4b6c-baf3-806a3c7d4739",
+  "user_id": "chat_p9f12cb_1756382584719",
+  "created_at": "2025-08-28T18:03:05.025186",
+  "last_activity": "2025-08-28T18:20:32.243299",
+  "messages": [
+    {
+      "id": "4678c930-ad83-40d7-96a7-6bb734c39d20",
+      "timestamp": "2025-08-28T18:03:05.026189",
+      "role": "system",
+      "content": "AroBot session initialized. I'm ready to help with your medical questions.",
+      "type": "system",
+      "metadata": {}
+    },
+    {
+      "id": "190357ff-9a67-49c1-a015-64a5d6bde669",
+      "timestamp": "2025-08-28T18:03:29.659030",
+      "role": "user",
+      "content": "tell about junayed which type of engineer he is",
+      "type": "text",
+      "metadata": {}
+    },
+    {
+      "id": "aa11dad4-e581-498e-863c-18125e365c95",
+      "timestamp": "2025-08-28T18:03:49.079153",
+      "role": "assistant",
+      "content": "I don't have any information about a person named Junayed or their profession. The provided context appears to be related to Ayurvedic medicine, the Bender-Gestalt test, and Hyoscine Butylbromide (a medication), but it does not mention anything about an individual named Junayed. If you could provide more context or clarify who Junayed is, I'll do my best to help.",
+      "type": "text",
+      "metadata": {}
+    },
+    {
+      "id": "f8085f5f-c572-4bbe-8bf5-96ddeb50b649",
+      "timestamp": "2025-08-28T18:03:49.082679",
+      "role": "user",
+      "content": "tell about junayed which type of engineer he is",
+      "type": "query",
+      "metadata": {}
+    },
+    {
+      "id": "55bf0063-27c3-48be-b0ef-8090664121a3",
+      "timestamp": "2025-08-28T18:03:49.083695",
+      "role": "assistant",
+      "content": "I don't have any information about a person named Junayed or their profession. The provided context appears to be related to Ayurvedic medicine, the Bender-Gestalt test, and Hyoscine Butylbromide (a medication), but it does not mention anything about an individual named Junayed. If you could provide more context or clarify who Junayed is, I'll do my best to help.",
+      "type": "response",
+      "metadata": {}
+    },
+    {
+      "id": "799a2913-3283-40d9-9e30-4668f340c1d5",
+      "timestamp": "2025-08-28T18:17:49.754670",
+      "role": "user",
+      "content": "tell me about google and websearch",
+      "type": "text",
+      "metadata": {}
+    },
+    {
+      "id": "22747eda-cf1a-4c79-af17-46c6fe6d4557",
+      "timestamp": "2025-08-28T18:18:22.487211",
+      "role": "assistant",
+      "content": "I'm not sure if \"Google\" or \"web search\" is relevant to the provided context. The context appears to be focused on medical information, specifically a reference guide for medications and health conditions.\n\nHowever, I can provide some general information on Google and web search:\n\n* Google is a multinational technology company that specializes in Internet-related services and products.\n* Web search refers to the process of searching for information on the internet using search engines like Google.\n\nIf you're looking for information on a specific medical topic or medication, I'd be happy to try and help you find it within the provided context. However, if you have a general question about Google or web search, I can provide more information on those topics.\n\nPlease let me know how I can assist you further!",
+      "type": "text",
+      "metadata": {}
+    },
+    {
+      "id": "a21af0f5-200b-4c31-91b1-6ea7995600e7",
+      "timestamp": "2025-08-28T18:18:22.490215",
+      "role": "user",
+      "content": "tell me about google and websearch",
+      "type": "query",
+      "metadata": {}
+    },
+    {
+      "id": "a5017817-a810-46bb-a794-85df97dcf0ce",
+      "timestamp": "2025-08-28T18:18:22.491215",
+      "role": "assistant",
+      "content": "I'm not sure if \"Google\" or \"web search\" is relevant to the provided context. The context appears to be focused on medical information, specifically a reference guide for medications and health conditions.\n\nHowever, I can provide some general information on Google and web search:\n\n* Google is a multinational technology company that specializes in Internet-related services and products.\n* Web search refers to the process of searching for information on the internet using search engines like Google.\n\nIf you're looking for information on a specific medical topic or medication, I'd be happy to try and help you find it within the provided context. However, if you have a general question about Google or web search, I can provide more information on those topics.\n\nPlease let me know how I can assist you further!",
+      "type": "response",
+      "metadata": {}
+    },
+    {
+      "id": "c5727967-a45e-42e0-bb8d-ee83e01b76e8",
+      "timestamp": "2025-08-28T18:19:28.681603",
+      "role": "user",
+      "content": "Uploaded image: Screenshot 2025-08-28 181912.png",
+      "type": "image",
+      "metadata": {
+        "filename": "Screenshot 2025-08-28 181912.png"
+      }
+    },
+    {
+      "id": "d501ebd3-f42f-4d66-bd6e-72b058f4434b",
+      "timestamp": "2025-08-28T18:20:32.242095",
+      "role": "system",
+      "content": "Prescription analyzed: Prescription processed (no medications clearly identified)",
+      "type": "prescription",
+      "metadata": {
+        "summary": "Prescription processed (no medications clearly identified)"
+      }
+    },
+    {
+      "id": "c516df1f-209a-43d2-834b-910244fdd891",
+      "timestamp": "2025-08-28T18:20:32.243299",
+      "role": "assistant",
+      "content": " The image is a schematic diagram showing the internal structure of a female reproductive system with various labels indicating different organs and components. At the top right corner of the image, there is a magnifying glass, suggesting a focus on this particular area. Below that, there's a finger pointing towards the area labeled \"uterus.\" To the left of the finger, the internal structures are detailed, showing the \"vagina\" and \"cervix.\"\n\nThe uterus itself appears to be dilated or stretched out, as indicated by the phrase \"abortion,\" which implies that the uterus is being prepared for an abortion procedure. The diagram also shows an ovary with the label \"ovarium,\" and a testicle is visible on one side of the diagram, indicating male reproductive organs.\n\nThe cervix is labeled as \"cervix,\" and it's connected to the uterus by a thin strip, presumably illustrating its function as part of the female reproductive system. The \"uterine tissue\" is visible, which may refer to the muscular layer lining the uterus that contracts during childbirth.\n\nAdditionally, the diagram indicates the presence of \"spectrum,\" \"testicular extracts,\" and \"embryonic tissue,\" suggesting a medical context related to these substances or processes, although without further context, their precise meanings are unclear. The image appears to be educational in nature, intended to illustrate the reproductive anatomy and function for informational or instructional purposes. ",
+      "type": "image_analysis_response",
+      "metadata": {}
+    }
+  ],
+  "context": {
+    "last_image_ocr": ""
+  },
+  "prescription_history": [
+    {
+      "id": "f39025c1-bd51-4995-b682-a6a0bc3da4d8",
+      "timestamp": "2025-08-28T18:20:32.240105",
+      "prescription_data": {
+        "analysis": " The image is a schematic diagram showing the internal structure of a female reproductive system with various labels indicating different organs and components. At the top right corner of the image, there is a magnifying glass, suggesting a focus on this particular area. Below that, there's a finger pointing towards the area labeled \"uterus.\" To the left of the finger, the internal structures are detailed, showing the \"vagina\" and \"cervix.\"\n\nThe uterus itself appears to be dilated or stretched out, as indicated by the phrase \"abortion,\" which implies that the uterus is being prepared for an abortion procedure. The diagram also shows an ovary with the label \"ovarium,\" and a testicle is visible on one side of the diagram, indicating male reproductive organs.\n\nThe cervix is labeled as \"cervix,\" and it's connected to the uterus by a thin strip, presumably illustrating its function as part of the female reproductive system. The \"uterine tissue\" is visible, which may refer to the muscular layer lining the uterus that contracts during childbirth.\n\nAdditionally, the diagram indicates the presence of \"spectrum,\" \"testicular extracts,\" and \"embryonic tissue,\" suggesting a medical context related to these substances or processes, although without further context, their precise meanings are unclear. The image appears to be educational in nature, intended to illustrate the reproductive anatomy and function for informational or instructional purposes. ",
+        "type": "general_image_analysis",
+        "status": "success"
+      }
+    }
+  ],
+  "medical_queries": [
+    {
+      "id": "79209f4e-51ac-41e9-8935-26b2c13ff0fd",
+      "timestamp": "2025-08-28T18:03:49.081152",
+      "query": "tell about junayed which type of engineer he is",
+      "response": "I don't have any information about a person named Junayed or their profession. The provided context appears to be related to Ayurvedic medicine, the Bender-Gestalt test, and Hyoscine Butylbromide (a medication), but it does not mention anything about an individual named Junayed. If you could provide more context or clarify who Junayed is, I'll do my best to help.",
+      "type": "general"
+    },
+    {
+      "id": "522c3aff-e51e-4e20-9c62-207635a4d188",
+      "timestamp": "2025-08-28T18:18:22.489232",
+      "query": "tell me about google and websearch",
+      "response": "I'm not sure if \"Google\" or \"web search\" is relevant to the provided context. The context appears to be focused on medical information, specifically a reference guide for medications and health conditions.\n\nHowever, I can provide some general information on Google and web search:\n\n* Google is a multinational technology company that specializes in Internet-related services and products.\n* Web search refers to the process of searching for information on the internet using search engines like Google.\n\nIf you're looking for information on a specific medical topic or medication, I'd be happy to try and help you find it within the provided context. However, if you have a general question about Google or web search, I can provide more information on those topics.\n\nPlease let me know how I can assist you further!",
+      "type": "general"
+    }
+  ]
+}

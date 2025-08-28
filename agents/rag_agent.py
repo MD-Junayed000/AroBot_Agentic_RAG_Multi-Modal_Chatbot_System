@@ -4,7 +4,7 @@ RAG Agent for retrieving and generating responses using knowledge base
 from typing import List, Dict, Any, Optional
 from core.vector_store import PineconeStore
 from core.llm_handler import LLMHandler
-from config.env_config import PINECONE_INDEX_PDF, PINECONE_INDEX_MEDICINE
+from config.env_config import PINECONE_PDF_INDEX, PINECONE_MEDICINE_INDEX
 from langsmith import traceable
 import logging
 
@@ -16,11 +16,11 @@ class RAGAgent:
     def __init__(self):
         # Initialize vector stores for different knowledge bases
         self.pdf_store = PineconeStore(
-            index_name=PINECONE_INDEX_PDF,
+            index_name=PINECONE_PDF_INDEX,
             dimension=384
         )
         self.medicine_store = PineconeStore(
-            index_name=PINECONE_INDEX_MEDICINE,
+            index_name=PINECONE_MEDICINE_INDEX,
             dimension=384
         )
         
@@ -185,8 +185,8 @@ class RAGAgent:
         try:
             # This would require additional methods in PineconeStore to get index stats
             return {
-                "pdf_index": PINECONE_INDEX_PDF,
-                "medicine_index": PINECONE_INDEX_MEDICINE,
+                "pdf_index": PINECONE_PDF_INDEX,
+                "medicine_index": PINECONE_MEDICINE_INDEX,
                 "status": "active"
             }
         except Exception as e:
