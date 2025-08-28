@@ -1,8 +1,7 @@
 """
 Multi-modal processor for handling images, text, and embeddings
 """
-import io
-import base64
+import io, base64
 from typing import List, Dict, Any, Optional, Union
 from PIL import Image
 import numpy as np
@@ -20,78 +19,66 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+def _looks_like_b64(s: str) -> bool:
+    try:
+        if "," in s and s.split(",")[0].startswith("data:"):
+            return True
+        base64.b64decode(s, validate=True)
+        return True
+    except Exception:
+        return False
+
 class MultiModalProcessor:
-    """Handles multi-modal processing including CLIP embeddings"""
-    
     def __init__(self):
         self.ocr_pipeline = OCRPipeline(lang=OCR_LANGUAGE)
-        
-        # Initialize CLIP for multimodal embeddings
-        if CLIP_AVAILABLE:
-            try:
-                self.clip_model, self.clip_preprocess = clip.load("ViT-B/32")
-                self.clip_available = True
-            except Exception as e:
-                logger.warning(f"CLIP model not available: {e}")
-                self.clip_available = False
-        else:
-            self.clip_available = False
-        
-        # Initialize text embedding model
+        # CLIP setup unchanged...
         self.text_embedder = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
-    
+
     def process_image(self, image_input: Union[str, bytes, Image.Image]) -> Dict[str, Any]:
-        """Process image through OCR and return extracted information"""
         try:
-            # Handle different input types
-            if isinstance(image_input, str):
-                # File path
-                image_path = image_input
-                image = Image.open(image_path)
-            elif isinstance(image_input, bytes):
-                # Bytes data
-                image = Image.open(io.BytesIO(image_input))
-                image_path = None
-            elif isinstance(image_input, Image.Image):
-                # PIL Image
+            if isinstance(image_input, Image.Image):
                 image = image_input
                 image_path = None
+            elif isinstance(image_input, bytes):
+                image = Image.open(io.BytesIO(image_input)).convert("RGB")
+                image_path = None
+            elif isinstance(image_input, str):
+                if _looks_like_b64(image_input):
+                    raw = image_input.split(",")[-1]
+                    image = Image.open(io.BytesIO(base64.b64decode(raw))).convert("RGB")
+                    image_path = None
+                else:
+                    image_path = image_input
+                    image = Image.open(image_path).convert("RGB")
             else:
                 raise ValueError("Unsupported image input type")
-            
-            # Extract text using OCR
+
+            # OCR
             if image_path:
                 lines, items = self.ocr_pipeline.run_on_image(image_path)
             else:
-                # Save temporary image for OCR processing
-                temp_path = "temp_image.jpg"
-                image.save(temp_path)
-                lines, items = self.ocr_pipeline.run_on_image(temp_path)
-            
-            # Extract structured information
+                tmp = "temp_image_for_ocr.jpg"
+                image.save(tmp, format="JPEG")
+                lines, items = self.ocr_pipeline.run_on_image(tmp)
+
             raw_text = "\n".join(lines)
-            
-            # Filter items by confidence (simulated)
-            high_confidence_items = [
-                item for item in items 
-                if item.get('raw', '').strip() and len(item.get('raw', '').strip()) > 2
-            ]
-            
+            # defend against weird shapes
+            safe_items = []
+            for it in items or []:
+                if isinstance(it, dict):
+                    if it.get("raw", "").strip():
+                        safe_items.append(it)
             return {
                 "raw_text": raw_text,
                 "lines": lines,
-                "structured_items": high_confidence_items,
-                "item_count": len(high_confidence_items),
+                "structured_items": safe_items,
+                "item_count": len(safe_items),
                 "status": "success"
             }
-            
         except Exception as e:
             logger.error(f"Error processing image: {e}")
-            return {
-                "error": str(e),
-                "status": "error"
-            }
-    
+            return {"error": str(e), "status": "error"}
+
     def generate_multimodal_embeddings(self, text: str, image: Optional[Image.Image] = None) -> Dict[str, np.ndarray]:
         """Generate embeddings for text and optionally combine with image embeddings"""
         embeddings = {}

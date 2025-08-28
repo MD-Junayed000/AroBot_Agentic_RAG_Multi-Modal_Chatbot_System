@@ -1,0 +1,35 @@
+{
+  "session_id": "d0a3c39b-f650-42c6-995f-196c5caa702c",
+  "user_id": "user_e2577742",
+  "created_at": "2025-08-28T18:01:11.322954",
+  "last_activity": "2025-08-28T18:01:14.966146",
+  "messages": [
+    {
+      "id": "15160cc1-2dba-4dd9-8c00-e4f31bd5cfc5",
+      "timestamp": "2025-08-28T18:01:11.323953",
+      "role": "system",
+      "content": "AroBot session initialized. I'm ready to help with your medical questions.",
+      "type": "system",
+      "metadata": {}
+    },
+    {
+      "id": "1f4d473d-f9af-46dd-bc84-9aefcc089d28",
+      "timestamp": "2025-08-28T18:01:14.963924",
+      "role": "user",
+      "content": "Created index arobot-medical-pdf-quiz",
+      "type": "vector_index_creation",
+      "metadata": {}
+    },
+    {
+      "id": "ca72b285-df8e-4d19-9dd4-4f829b429170",
+      "timestamp": "2025-08-28T18:01:14.966146",
+      "role": "assistant",
+      "content": "Created vector index 'arobot-medical-pdf-quiz' with 29 chunks.",
+      "type": "vector_index_response",
+      "metadata": {}
+    }
+  ],
+  "context": {},
+  "prescription_history": [],
+  "medical_queries": []
+}

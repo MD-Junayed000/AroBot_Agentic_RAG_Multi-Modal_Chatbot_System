@@ -1,0 +1,35 @@
+{
+  "session_id": "74040d21-3ae3-4cb6-8f74-ff8a5d468a55",
+  "user_id": "user_d0c3f4ce",
+  "created_at": "2025-08-28T18:00:16.700139",
+  "last_activity": "2025-08-28T18:00:20.577135",
+  "messages": [
+    {
+      "id": "3a1fe519-f0d4-4bfc-9bbf-80b9ae7d6013",
+      "timestamp": "2025-08-28T18:00:16.702136",
+      "role": "system",
+      "content": "AroBot session initialized. I'm ready to help with your medical questions.",
+      "type": "system",
+      "metadata": {}
+    },
+    {
+      "id": "aedd7d0f-9041-4e7b-ac0b-8eaed0429a8f",
+      "timestamp": "2025-08-28T18:00:20.576132",
+      "role": "user",
+      "content": "Created index arobot-medical-pdf-junayed-resume",
+      "type": "vector_index_creation",
+      "metadata": {}
+    },
+    {
+      "id": "7db37ed0-19e6-4431-92d2-3cbb783d6e0b",
+      "timestamp": "2025-08-28T18:00:20.577135",
+      "role": "assistant",
+      "content": "Created vector index 'arobot-medical-pdf-junayed-resume' with 17 chunks.",
+      "type": "vector_index_response",
+      "metadata": {}
+    }
+  ],
+  "context": {},
+  "prescription_history": [],
+  "medical_queries": []
+}

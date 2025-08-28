@@ -49,7 +49,7 @@ AroBot_Agentic_RAG_Multi-Modal_Chatbot_System/
 ├── 📁 prescribtion data/   # Sample prescription images (129 images)
 ├── 📁 static/              # Static web files
 ├── 📁 templates/           # HTML templates
-│   └── chat.html           # Web chat interface
+│   └── chat_enhanced.html  # Web chat interface
 ├── 📁 utils/               # Utilities
 │   ├── data_ingestion.py   # Data loading
 │   ├── ocr_pipeline.py     # OCR processing
@@ -67,7 +67,7 @@ AroBot_Agentic_RAG_Multi-Modal_Chatbot_System/
 
 ### 1. Prerequisites
 
-- Python 3.10+
+- Python 3.10.0
 - Ollama running at http://localhost:11434
 - Pinecone account (recommended)
 - langsmith account (optional for monitoring)
@@ -86,7 +86,7 @@ pip install -r requirements.txt
 ### 3. Pull models (Ollama)
 
 ```bash
-ollama pull neural-chat:7b
+ollama pull llama3.2:3b
 ollama pull llava:7b
 ```
 
@@ -100,17 +100,18 @@ LANGSMITH_API_KEY=your_langsmith_api_key
 # Pinecone Configuration
 PINECONE_CLOUD=aws
 PINECONE_REGION=us-east-1
-PINECONE_INDEX_PDF=arobot-medical-pdfs
-PINECONE_INDEX_MEDICINE=arobot-medicine-data
+PINECONE_PDF_INDEX=arobot-medical-pdfs
+PINECONE_MEDICINE_INDEX=arobot-medicine-data
+
 
 # LangSmith Configuration
 LANGCHAIN_TRACING_V2=true
 LANGCHAIN_ENDPOINT=https://api.smith.langchain.com
-LANGCHAIN_PROJECT=arobot-multimodal-chatbot
+LANGCHAIN_PROJECT=arobot-multimodal-chatbot-system
 
 # Ollama Configuration
 OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_TEXT_MODEL=neural-chat:7b
+OLLAMA_TEXT_MODEL=llama3.2:3b
 OLLAMA_VISION_MODEL=llava:7b
 
 # OCR Configuration
@@ -121,6 +122,7 @@ OCR_CONFIDENCE_THRESHOLD=0.5
 APP_HOST=0.0.0.0
 APP_PORT=8000
 DEBUG=true
+
 ```
 
 ### 5. Local Run and Testing
@@ -182,11 +184,6 @@ python app.py
 - Slow OCR: prefer GPU and clear scans.
 - Memory recall: ensure same `session_id`; UI stores sessions.
 - For PDF description without vector write, use `/api/v1/pdf/analyze`.
-- to verfy is system is properly setup then run:
-
-```bash
-python verify_system.py
-```
 
 ## Notes
 

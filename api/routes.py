@@ -1,947 +1,720 @@
 """
 API routes for AroBot Medical Chatbot
 """
+import io
+import logging
+import re
+from pathlib import Path
+from typing import Optional, Dict, Any, List
+
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
-from typing import Optional, List, Dict, Any
-import io
 from PIL import Image
-import base64
-import tempfile
-from pathlib import Path
+from pydantic import BaseModel
 
-from agents.medical_agent import MedicalAgent
+from config.env_config import TEMPLATES_DIR, PINECONE_API_KEY
 from mcp_server.mcp_handler import MCPHandler
-from config.env_config import TEMPLATES_DIR
 
-# Simple conversation memory storage
-conversation_memory = {}
+logger = logging.getLogger(__name__)
 
-import re
-from typing import Optional
+# --------------------------------------------------------------------------------------
+# Conversation memory (fast in-memory ring + MCP persistent memory)
+# --------------------------------------------------------------------------------------
+conversation_memory: Dict[str, List[Dict[str, str]]] = {}
 
+
+def add_to_conversation_memory(session_id: str, role: str, message: str):
+    if session_id not in conversation_memory:
+        conversation_memory[session_id] = []
+    conversation_memory[session_id].append({"role": role, "message": message})
+    # keep a short, fresh window
+    if len(conversation_memory[session_id]) > 12:
+        conversation_memory[session_id] = conversation_memory[session_id][-12:]
+
+
+def get_conversation_memory_context(session_id: str) -> str:
+    msgs = conversation_memory.get(session_id, [])
+    if not msgs:
+        return ""
+    lines = [f"{m['role']}: {m['message']}" for m in msgs[-8:]]
+    return "Previous conversation:\n" + "\n".join(lines)
+
+
+# --------------------------------------------------------------------------------------
+# Perfect “pattern” memory (fast answers to “what’s my name/department/hospital?”)
+# --------------------------------------------------------------------------------------
 class PerfectMemoryProcessor:
-    """100% accurate memory processor using pattern matching"""
-    
     def __init__(self):
-        # Enhanced patterns for better extraction
-        self.patterns = {
+        self.session_facts: Dict[str, Dict[str, str]] = {}
+
+    def extract_facts(self, transcript: str) -> Dict[str, List[str]]:
+        patterns = {
             "name": [
-                r"I am (?:Dr\.?\s+)?([A-Z][a-z]+\s+[A-Z][a-z]+)(?:\s+(?:from|and|in|at|,)|\s*\.?\s*$)",
-                r"my name is (?:Dr\.?\s+)?([A-Z][a-z]+\s+[A-Z][a-z]+)(?:\s+(?:from|and|in|at|,)|\s*\.?\s*$)",
-                r"I'm (?:Dr\.?\s+)?([A-Z][a-z]+\s+[A-Z][a-z]+)(?:\s+(?:from|and|in|at|,)|\s*\.?\s*$)",
-                r"call me (?:Dr\.?\s+)?([A-Z][a-z]+\s+[A-Z][a-z]+)(?:\s+(?:from|and|in|at|,)|\s*\.?\s*$)",
-                r"I am (?:Dr\.?\s+)?([A-Z][a-z]+\s+[A-Z][a-z]+)\.?\s*$",
-                r"my name is (?:Dr\.?\s+)?([A-Z][a-z]+\s+[A-Z][a-z]+)\.?\s*$"
+                r"I am (?:Dr\.?\s+)?([A-Z][a-z]+\s+[A-Z][a-z]+)\b",
+                r"my name is (?:Dr\.?\s+)?([A-Z][a-z]+\s+[A-Z][a-z]+)\b",
+                r"I'?m (?:Dr\.?\s+)?([A-Z][a-z]+\s+[A-Z][a-z]+)\b",
+                r"call me (?:Dr\.?\s+)?([A-Z][a-z]+\s+[A-Z][a-z]+)\b",
             ],
             "department": [
-                r"from (?:the\s+)?([a-z]+)\s+department",
-                r"work in (?:the\s+)?([a-z]+)\s+department",
-                r"in (?:the\s+)?([a-z]+)\s+department",
-                r"specialize in ([a-z]+)",
-                r"specialty is ([a-z]+)"
+                r"(?:in|from|work in)\s+(?:the\s+)?([a-z]+)\s+department",
+                r"special(?:ty|ize) (?:is|in)\s+([a-z]+)",
             ],
             "hospital": [
                 r"at ([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\s+Hospital)",
                 r"work at ([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)",
-                r"hospital is ([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)"
-            ]
-        }
-        
-        self.query_patterns = {
-            "name": [
-                r"what is my name", r"my name", r"who am i", r"what's my name",
-                r"tell me my name", r"remember my name", r"what's my name again",
-                r"tell me my full name", r"can you remind me of my name",
-                r"what am i called", r"what do you call me", r"my full name",
-                r"remind me my name", r"who do you think i am", r"my name again"
             ],
-            "department": [
-                r"what department", r"which department", r"my department",
-                r"what specialty", r"my specialty", r"department do i work",
-                r"where do i work", r"what field", r"my specialization",
-                r"which field do i work in", r"what area do i work in"
-            ],
-            "hospital": [
-                r"which hospital", r"what hospital", r"my hospital",
-                r"hospital do i work", r"where do i work", r"my workplace",
-                r"where am i employed", r"what institution"
-            ]
         }
-        
-        self.session_facts = {}
-    
-    def extract_facts(self, conversation_history: str) -> dict:
-        """Extract facts from conversation with 100% accuracy"""
         facts = {"name": [], "department": [], "hospital": []}
-        
-        for fact_type, patterns in self.patterns.items():
-            for pattern in patterns:
-                matches = re.findall(pattern, conversation_history, re.IGNORECASE)
-                if matches:
-                    # Clean and add unique matches
-                    cleaned_matches = [match.strip().title() for match in matches]
-                    facts[fact_type].extend(cleaned_matches)
-        
-        # Remove duplicates while preserving order
-        for fact_type in facts:
-            facts[fact_type] = list(dict.fromkeys(facts[fact_type]))
-        
+        for key, pats in patterns.items():
+            for p in pats:
+                for m in re.findall(p, transcript, flags=re.IGNORECASE):
+                    facts[key].append(str(m).strip().title())
+        for k in facts:
+            # dedupe
+            seen, clean = set(), []
+            for v in facts[k]:
+                if v not in seen:
+                    seen.add(v)
+                    clean.append(v)
+            facts[k] = clean
         return facts
-    
-    def detect_memory_query(self, query: str) -> Optional[str]:
-        """Detect if query is asking for remembered information"""
-        query_lower = query.lower().strip()
-        
-        # Ultra-reliable simple patterns
-        if any(phrase in query_lower for phrase in ["what is my name", "my name", "who am i", "what's my name"]):
+
+    def detect_query_type(self, query: str) -> Optional[str]:
+        q = query.lower()
+        if any(k in q for k in ["what is my name", "what's my name", "who am i", "my name"]):
             return "name"
-        if any(phrase in query_lower for phrase in ["what department", "which department", "department do i work"]):
+        if any(k in q for k in ["what department", "which department", "department do i work"]):
             return "department"
-        if any(phrase in query_lower for phrase in ["which hospital", "what hospital", "hospital do i work"]):
+        if any(k in q for k in ["which hospital", "what hospital", "hospital do i work"]):
             return "hospital"
-        
         return None
-    
-    def generate_memory_response(self, query: str, session_id: str, 
-                                conversation_history: str) -> Optional[str]:
-        """Generate guaranteed accurate memory response"""
-        
-        # Extract facts from current conversation
-        facts = self.extract_facts(conversation_history)
-        
-        # Store facts for this session
+
+    def answer_if_memory(self, query: str, session_id: str, transcript: str) -> Optional[str]:
+        facts_now = self.extract_facts(transcript)
         if session_id not in self.session_facts:
             self.session_facts[session_id] = {}
-        
-        # Update session facts with latest information
-        for fact_type, fact_list in facts.items():
-            if fact_list:
-                self.session_facts[session_id][fact_type] = fact_list[-1]  # Most recent
-        
-        # Detect what the user is asking for
-        query_type = self.detect_memory_query(query)
-        
-        if query_type and session_id in self.session_facts:
-            stored_fact = self.session_facts[session_id].get(query_type)
-            
-            if stored_fact:
-                if query_type == "name":
-                    return f"Your name is Dr. {stored_fact}."
-                elif query_type == "department":
-                    return f"You work in the {stored_fact} department."
-                elif query_type == "hospital":
-                    return f"You work at {stored_fact}."
-        
-        # Also check fresh facts from current conversation
-        if query_type and facts.get(query_type):
-            fact = facts[query_type][-1]  # Most recent mention
-            if query_type == "name":
-                return f"Your name is Dr. {fact}."
-            elif query_type == "department":
-                return f"You work in the {fact} department."
-            elif query_type == "hospital":
-                return f"You work at {fact}."
-        
-        return None  # Let LLM handle non-memory queries
+        # keep most recent
+        for k, vals in facts_now.items():
+            if vals:
+                self.session_facts[session_id][k] = vals[-1]
 
-# Initialize the perfect memory processor
+        t = self.detect_query_type(query)
+        if not t:
+            return None
+        val = self.session_facts[session_id].get(t)
+        if not val:
+            # try immediate transcript
+            if facts_now.get(t):
+                val = facts_now[t][-1]
+        if not val:
+            return None
+
+        if t == "name":
+            return f"Your name is Dr. {val}."
+        if t == "department":
+            return f"You work in the {val} department."
+        if t == "hospital":
+            return f"You work at {val}."
+        return None
+
+
 perfect_memory = PerfectMemoryProcessor()
 
-def add_to_conversation_memory(session_id: str, role: str, message: str):
-    """Add message to simple conversation memory"""
-    if session_id not in conversation_memory:
-        conversation_memory[session_id] = []
-    
-    conversation_memory[session_id].append({
-        "role": role,
-        "message": message
-    })
-    
-    # Keep only last 10 messages per session
-    if len(conversation_memory[session_id]) > 10:
-        conversation_memory[session_id] = conversation_memory[session_id][-10:]
-
-def get_conversation_memory_context(session_id: str) -> str:
-    """Get conversation memory as formatted string"""
-    if session_id not in conversation_memory:
-        return ""
-    
-    messages = conversation_memory[session_id]
-    if not messages:
-        return ""
-    
-    formatted_messages = []
-    for msg in messages[-6:]:  # Last 6 messages
-        formatted_messages.append(f"{msg['role']}: {msg['message']}")
-    
-    return "Previous conversation:\n" + "\n".join(formatted_messages)
-
-# Initialize components
+# --------------------------------------------------------------------------------------
+# Lazy singletons
+# --------------------------------------------------------------------------------------
 router = APIRouter()
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+_mcp: Optional[MCPHandler] = None
+_medical_agent = None  # imported lazily to avoid heavy startup
 
-# Lazy initialization for heavy components
-medical_agent = None
-mcp_handler = None
+
+def get_mcp() -> MCPHandler:
+    global _mcp
+    if _mcp is None:
+        _mcp = MCPHandler()
+    return _mcp
+
 
 def get_medical_agent():
-    global medical_agent
-    if medical_agent is None:
-        print("🔄 Initializing Medical Agent...")
+    global _medical_agent
+    if _medical_agent is None:
         from agents.medical_agent import MedicalAgent
-        medical_agent = MedicalAgent()
-        print("✅ Medical Agent initialized")
-    return medical_agent
+        _medical_agent = MedicalAgent()
+    return _medical_agent
 
-def get_mcp_handler():
-    global mcp_handler
-    if mcp_handler is None:
-        print("🔄 Initializing MCP Handler...")
-        from mcp_server.mcp_handler import MCPHandler
-        mcp_handler = MCPHandler()
-        print("✅ MCP Handler initialized")
-    return mcp_handler
 
-async def create_new_pinecone_index(pdf_data: bytes, filename: str, index_name: str, description: str = None) -> Dict[str, Any]:
-    """Create a new Pinecone index and add PDF content"""
+# --------------------------------------------------------------------------------------
+# Small helper: create temp file
+# --------------------------------------------------------------------------------------
+def _write_temp_bytes(data: bytes, name: str) -> Path:
+    temp_dir = Path("temp_uploads")
+    temp_dir.mkdir(exist_ok=True)
+    p = temp_dir / f"temp_{name}"
+    p.write_bytes(data)
+    return p
+
+
+# --------------------------------------------------------------------------------------
+# Weather helpers (Open-Meteo)
+# --------------------------------------------------------------------------------------
+def _get_weather_text(lat: float, lon: float) -> str:
+    """Return a short one-line weather text. Uses openmeteo_requests if installed, else plain requests."""
     try:
-        # Create temporary file for PDF processing
-        temp_dir = Path("temp_uploads")
-        temp_dir.mkdir(exist_ok=True)
-        
-        temp_file_path = temp_dir / f"temp_{filename}"
-        
-        # Write PDF data to temporary file
-        with open(temp_file_path, "wb") as temp_file:
-            temp_file.write(pdf_data)
-        
-        try:
-            # Import PDF processing modules
-            from langchain_community.document_loaders import PyPDFLoader
-            from langchain.text_splitter import RecursiveCharacterTextSplitter
-            from core.vector_store import PineconeStore
-            
-            # Load PDF
-            loader = PyPDFLoader(str(temp_file_path))
-            documents = loader.load()
-            
-            # Split documents into chunks
-            text_splitter = RecursiveCharacterTextSplitter(
-                chunk_size=500,
-                chunk_overlap=50,
-                length_function=len,
-            )
-            texts = text_splitter.split_documents(documents)
-            
-            # Prepare texts and metadata for vector store
-            text_contents = []
-            metadatas = []
-            
-            for i, doc in enumerate(texts):
-                text_contents.append(doc.page_content)
-                metadatas.append({
-                    "source": filename,
-                    "description": description or f"PDF document: {filename}",
-                    "chunk_id": i,
-                    "page": doc.metadata.get("page", 0),
-                    "total_chunks": len(texts),
-                    "index_name": index_name
-                })
-            
-            # Create new vector store with custom index
-            vector_store = PineconeStore(index_name=index_name, dimension=384)
-            
-            # Add texts to the new store
-            vector_store.upsert_texts(text_contents, metadatas)
-            
-            return {
-                "status": "success",
-                "chunks_processed": len(texts),
-                "pages_processed": len(documents),
-                "filename": filename,
-                "index_name": index_name
-            }
-            
-        finally:
-            # Clean up temporary file
-            if temp_file_path.exists():
-                temp_file_path.unlink()
-            
-    except Exception as e:
-        return {
-            "status": "error",
-            "error": str(e),
-            "filename": filename,
-            "index_name": index_name
-        }
+        import openmeteo_requests  # type: ignore
+        import requests_cache  # type: ignore
+        from retry_requests import retry  # type: ignore
 
-async def process_pdf_to_knowledge_base(pdf_data: bytes, filename: str, description: str = None) -> Dict[str, Any]:
-    """Process PDF and add to knowledge base"""
-    try:
-        # Create temporary file for PDF processing
-        temp_dir = Path("temp_uploads")
-        temp_dir.mkdir(exist_ok=True)
-        
-        temp_file_path = temp_dir / f"temp_{filename}"
-        
-        # Write PDF data to temporary file
-        with open(temp_file_path, "wb") as temp_file:
-            temp_file.write(pdf_data)
-        
-        try:
-            # Import PDF processing modules
-            from langchain_community.document_loaders import PyPDFLoader
-            from langchain.text_splitter import RecursiveCharacterTextSplitter
-            
-            # Load PDF
-            loader = PyPDFLoader(str(temp_file_path))
-            documents = loader.load()
-            
-            # Split documents into chunks
-            text_splitter = RecursiveCharacterTextSplitter(
-                chunk_size=500,
-                chunk_overlap=50,
-                length_function=len,
-            )
-            texts = text_splitter.split_documents(documents)
-            
-            # Prepare texts and metadata for vector store
-            text_contents = []
-            metadatas = []
-            
-            for i, doc in enumerate(texts):
-                text_contents.append(doc.page_content)
-                metadatas.append({
-                    "source": filename,
-                    "description": description or f"PDF document: {filename}",
-                    "chunk_id": i,
-                    "page": doc.metadata.get("page", 0),
-                    "total_chunks": len(texts)
-                })
-            
-            # Get RAG agent and add to PDF knowledge base
-            rag_agent = get_medical_agent().rag_agent
-            
-            # Add texts to the PDF store
-            rag_agent.pdf_store.upsert_texts(text_contents, metadatas)
-            
-            return {
-                "status": "success",
-                "chunks_processed": len(texts),
-                "pages_processed": len(documents),
-                "filename": filename
-            }
-            
-        finally:
-            # Clean up temporary file
-            if temp_file_path.exists():
-                temp_file_path.unlink()
-            
-    except Exception as e:
-        return {
-            "status": "error",
-            "error": str(e),
-            "filename": filename
-        }
+        cache_session = requests_cache.CachedSession(".cache", expire_after=3600)
+        retry_session = retry(cache_session, retries=5, backoff_factor=0.2)
+        client = openmeteo_requests.Client(session=retry_session)
+        url = "https://api.open-meteo.com/v1/forecast"
+        params = {"latitude": lat, "longitude": lon, "hourly": "temperature_2m"}
+        responses = client.weather_api(url, params=params)
+        r = responses[0]
+        hourly = r.Hourly()
+        temp_c = float(hourly.Variables(0).ValuesAsNumpy()[0])
+        return f"Current model temperature near {lat:.4f},{lon:.4f}: {temp_c:.1f}°C"
+    except Exception:
+        # Lightweight fallback
+        import requests
 
+        url = "https://api.open-meteo.com/v1/forecast"
+        resp = requests.get(url, params={"latitude": lat, "longitude": lon, "hourly": "temperature_2m"}, timeout=10)
+        j = resp.json()
+        try:
+            temp_c = float(j["hourly"]["temperature_2m"][0])
+            return f"Current model temperature near {lat:.4f},{lon:.4f}: {temp_c:.1f}°C"
+        except Exception:
+            return "Weather service is temporarily unavailable."
+
+
+# --------------------------------------------------------------------------------------
 # Pydantic models
+# --------------------------------------------------------------------------------------
 class ChatMessage(BaseModel):
     message: str
     session_id: Optional[str] = None
     use_web_search: Optional[bool] = False
 
+
 class PrescriptionQuery(BaseModel):
     query: Optional[str] = None
     session_id: Optional[str] = None
+
 
 class MedicineSearch(BaseModel):
     condition: str
     session_id: Optional[str] = None
 
+
 class SessionRequest(BaseModel):
     user_id: Optional[str] = None
 
-# Web interface route
+
+# --------------------------------------------------------------------------------------
+# UI route
+# --------------------------------------------------------------------------------------
 @router.get("/chat", response_class=HTMLResponse)
 async def chat_interface(request: Request):
-    """Web interface for the chatbot"""
     return templates.TemplateResponse("chat_enhanced.html", {"request": request})
 
-# Session management
+
+# --------------------------------------------------------------------------------------
+# Sessions
+# --------------------------------------------------------------------------------------
 @router.post("/session/create")
-async def create_session(request: SessionRequest):
-    """Create a new conversation session"""
-    try:
-        result = get_mcp_handler().initialize_session(request.user_id)
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+async def create_session(req: SessionRequest):
+    res = get_mcp().initialize_session(req.user_id)
+    return res
+
 
 @router.get("/session/{session_id}/context")
 async def get_session_context(session_id: str):
-    """Get conversation context for a session"""
-    try:
-        context = get_mcp_handler().get_conversation_context(session_id)
-        return context
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return get_mcp().get_conversation_context(session_id)
+
 
 @router.get("/session/{session_id}/history")
 async def get_session_history(session_id: str):
-    """Get medical history for a session"""
-    try:
-        history = get_mcp_handler().get_user_medical_history(session_id)
-        return history
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return get_mcp().get_user_medical_history(session_id)
 
-# Chat endpoint
+
+# --------------------------------------------------------------------------------------
+# Chat
+# --------------------------------------------------------------------------------------
 @router.post("/chat")
-async def chat_with_bot(message: ChatMessage):
-    """Chat with the medical bot"""
+async def chat_with_bot(payload: ChatMessage):
     try:
-        # Create session if not provided
-        session_id = message.session_id
-        if not session_id:
-            session_result = get_mcp_handler().initialize_session()
-            session_id = session_result.get("session_id")
-        
-        # Add user message to both MCP and simple memory
-        get_mcp_handler().add_user_message(session_id, message.message)
-        add_to_conversation_memory(session_id, "User", message.message)
-        
-        # Get conversation context from simple memory (reliable and fast)
-        conversation_context = get_conversation_memory_context(session_id)
-        print(f"🧠 [DEBUG] Using simple memory context ({len(conversation_context)} chars)")
-        if conversation_context:
-            print(f"📝 [DEBUG] Context preview: {conversation_context[:150]}...")
-        
-        # 🚀 HYBRID MEMORY: Check for instant memory responses first
-        memory_response = perfect_memory.generate_memory_response(
-            message.message, session_id, conversation_context
-        )
-        
-        if memory_response:
-            print(f"✅ [MEMORY] Instant response: {memory_response}")
-            
-            # Add the memory response to conversation
-            add_to_conversation_memory(session_id, "Assistant", memory_response)
-            get_mcp_handler().add_assistant_response(session_id, memory_response)
-            
+        # session
+        session_id = payload.session_id or get_mcp().initialize_session().get("session_id")
+
+        # record user message (both memories)
+        get_mcp().add_user_message(session_id, payload.message)
+        add_to_conversation_memory(session_id, "User", payload.message)
+
+        # quick weather hook (simple trigger)
+        lower_msg = payload.message.lower()
+        if "weather" in lower_msg:
+            # try to grab "lat,lon" from text; else use a sensible default (NYC)
+            m = re.search(r"(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)", payload.message)
+            lat, lon = (40.73061, -73.935242)
+            if m:
+                try:
+                    lat, lon = float(m.group(1)), float(m.group(2))
+                except Exception:
+                    pass
+            wx = _get_weather_text(lat, lon)
+            add_to_conversation_memory(session_id, "Assistant", wx)
+            get_mcp().add_assistant_response(session_id, wx)
+            return {"response": wx, "session_id": session_id, "sources": {"weather": "open-meteo"}, "status": "success"}
+
+        # fast memory answer?
+        transcript = get_conversation_memory_context(session_id)
+        mem = perfect_memory.answer_if_memory(payload.message, session_id, transcript)
+        if mem:
+            add_to_conversation_memory(session_id, "Assistant", mem)
+            get_mcp().add_assistant_response(session_id, mem)
             return {
-                "response": memory_response,
+                "response": mem,
                 "session_id": session_id,
-                "sources": {"memory": "perfect_recall"},
-                "status": "success"
+                "sources": {"memory": "pattern"},
+                "status": "success",
             }
-        
-        # If no memory match, proceed with normal LLM processing
-        print(f"🔄 [MEMORY] No memory match, proceeding to LLM")
-        
-        # Get response from medical agent with conversation context
-        response = get_medical_agent().handle_text_query(
-            message.message, 
+
+        # augment context with last uploaded PDF / Image OCR if the user refers to "this pdf/image"
+        extra_blocks: List[str] = []
+        try:
+            sess_ctx = get_mcp().memory.active_sessions.get(session_id, {}).get("context", {})
+            if ("this pdf" in lower_msg or "the pdf" in lower_msg or "that pdf" in lower_msg or "pdf" in lower_msg) and sess_ctx.get(
+                "last_pdf"
+            ):
+                extra_blocks.append(f"ATTACHED_PDF_TEXT:\n{sess_ctx['last_pdf']}")
+            if ("this image" in lower_msg or "the image" in lower_msg or "that image" in lower_msg or "image" in lower_msg) and sess_ctx.get(
+                "last_image_ocr"
+            ):
+                extra_blocks.append(f"ATTACHED_IMAGE_OCR:\n{sess_ctx['last_image_ocr']}")
+        except Exception:
+            pass
+
+        augmented_context = transcript + ("\n\n" + "\n\n".join(extra_blocks) if extra_blocks else "")
+
+        # full LLM handling (RAG + conversation context)
+        resp = get_medical_agent().handle_text_query(
+            payload.message,
             session_id=session_id,
-            conversation_context=conversation_context,
-            use_web_search=message.use_web_search
+            conversation_context=augmented_context,
+            use_web_search=payload.use_web_search,
         )
-        
-        if response.get("status") == "success":
-            bot_response = response.get("response", "I apologize, but I couldn't generate a response.")
-            
-            # Add bot response to both MCP and simple memory
-            get_mcp_handler().add_assistant_response(session_id, bot_response)
-            add_to_conversation_memory(session_id, "Assistant", bot_response)
-            
-            # Record medical query
-            get_mcp_handler().record_medical_query(session_id, message.message, bot_response)
-            
+
+        if resp.get("status") == "success":
+            text = resp.get("response", "")
+            add_to_conversation_memory(session_id, "Assistant", text)
+            get_mcp().add_assistant_response(session_id, text)
+            get_mcp().record_medical_query(session_id, payload.message, text)
             return {
-                "response": bot_response,
+                "response": text,
                 "session_id": session_id,
-                "sources": response.get("sources", {}),
-                "status": "success"
+                "sources": resp.get("sources", {}),
+                "status": "success",
             }
-        else:
-            error_message = f"Error: {response.get('error', 'Unknown error')}"
-            get_mcp_handler().add_assistant_response(session_id, error_message)
-            
-            return {
-                "response": error_message,
-                "session_id": session_id,
-                "status": "error"
-            }
-    
+
+        err = f"Error: {resp.get('error', 'Unknown error')}"
+        get_mcp().add_assistant_response(session_id, err)
+        return {"response": err, "session_id": session_id, "status": "error"}
+
     except Exception as e:
+        logger.exception("Chat error")
         raise HTTPException(status_code=500, detail=str(e))
 
-# Prescription processing
+
+# --------------------------------------------------------------------------------------
+# Prescription image
+# --------------------------------------------------------------------------------------
 @router.post("/prescription/upload")
 async def upload_prescription(
     file: UploadFile = File(...),
     query: Optional[str] = Form(None),
     image_type: Optional[str] = Form("prescription"),
-    session_id: Optional[str] = Form(None)
+    session_id: Optional[str] = Form(None),
 ):
-    """Upload and analyze prescription image"""
-    try:
-        # Validate file type
-        if not file.content_type.startswith('image/'):
-            raise HTTPException(status_code=400, detail="File must be an image")
-        
-        # Read image data
-        image_data = await file.read()
-        image = Image.open(io.BytesIO(image_data))
-        
-        # Create session if not provided
-        if not session_id:
-            session_result = get_mcp_handler().initialize_session()
-            session_id = session_result.get("session_id")
-        
-        # Add user message about prescription upload
-        upload_message = f"Uploaded prescription image: {file.filename}"
-        if query:
-            upload_message += f" with query: {query}"
-        
-        get_mcp_handler().add_user_message(
-            session_id, 
-            upload_message, 
-            "prescription_upload", 
-            {"filename": file.filename}
-        )
-        
-        # Use provided image_type or determine from query
-        if not image_type:
-            image_type = "prescription" if "prescription" in (query or "").lower() else "general"
-        
-        # Process image with enhanced analysis
-        result = get_medical_agent().handle_image_query(image_data, query, image_type)
-        
-        if result.get("status") == "success":
-            # Handle both prescription and general image analysis
-            analysis = result.get("prescription_analysis") or result.get("analysis", "Analysis completed.")
-            
-            # Record prescription in conversation memory
-            get_mcp_handler().record_prescription_analysis(session_id, result)
-            
-            # Add response to conversation
-            get_mcp_handler().add_assistant_response(
-                session_id, 
-                analysis, 
-                "image_analysis_response"
-            )
-            
-            return {
-                "response": analysis,
-                "analysis": analysis,
-                "session_id": session_id,
-                "ocr_results": result.get("ocr_results", {}),
-                "status": "success"
-            }
-        else:
-            error_message = f"Error analyzing prescription: {result.get('error', 'Unknown error')}"
-            get_mcp_handler().add_assistant_response(session_id, error_message)
-            
-            return {
-                "error": error_message,
-                "session_id": session_id,
-                "status": "error"
-            }
-    
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    if not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="File must be an image")
+    session_id = session_id or get_mcp().initialize_session().get("session_id")
 
+    img_bytes = await file.read()
+    Image.open(io.BytesIO(img_bytes))  # validates image
+
+    # store user action
+    get_mcp().add_user_message(session_id, f"Uploaded image: {file.filename}", "image", {"filename": file.filename})
+
+    # type
+    image_type = image_type or ("prescription" if "prescription" in (query or "").lower() else "general")
+
+    result = get_medical_agent().handle_image_query(img_bytes, query, image_type)
+
+    if result.get("status") == "success":
+        analysis = result.get("prescription_analysis") or result.get("analysis", "Image analyzed.")
+        get_mcp().record_prescription_analysis(session_id, result)
+        get_mcp().add_assistant_response(session_id, analysis, "image_analysis_response")
+        add_to_conversation_memory(session_id, "Assistant", analysis)
+
+        # Save last OCR text for follow-up ("this image") questions
+        try:
+            sess = get_mcp().memory.active_sessions.get(session_id, {})
+            ocr_text = result.get("ocr_results", {}).get("raw_text", "")
+            sess.setdefault("context", {})["last_image_ocr"] = (ocr_text or "")[:4000]
+            get_mcp().memory._save_session(session_id)
+        except Exception:
+            pass
+
+        return {"response": analysis, "session_id": session_id, "ocr_results": result.get("ocr_results", {}), "status": "success"}
+
+    error_message = f"Error analyzing image: {result.get('error', 'Unknown error')}"
+    get_mcp().add_assistant_response(session_id, error_message)
+    raise HTTPException(status_code=500, detail=error_message)
+
+
+# --- Compatibility endpoint so the UI can call /image/analyze or /prescription/upload ----
+@router.post("/image/analyze")
+async def analyze_image_compat(
+    file: UploadFile = File(...),
+    session_id: Optional[str] = Form(None),
+    question: Optional[str] = Form(None),
+):
+    # Delegate to the prescription handler with image_type="general"
+    return await upload_prescription(file=file, query=question, image_type="general", session_id=session_id)
+
+
+# --------------------------------------------------------------------------------------
+# Prescription (text)
+# --------------------------------------------------------------------------------------
 @router.post("/prescription/analyze")
-async def analyze_prescription_text(request: PrescriptionQuery):
-    """Analyze prescription from text input"""
-    try:
-        if not request.query:
-            raise HTTPException(status_code=400, detail="Query is required")
-        
-        # Create session if not provided
-        session_id = request.session_id
-        if not session_id:
-            session_result = get_mcp_handler().initialize_session()
-            session_id = session_result.get("session_id")
-        
-        # Add user query to conversation
-        get_mcp_handler().add_user_message(session_id, f"Prescription query: {request.query}")
-        
-        # Use RAG agent for prescription analysis
-        result = get_medical_agent().rag_agent.analyze_prescription_query(request.query)
-        
-        if result.get("status") == "success":
-            response = result.get("response", "Analysis completed.")
-            
-            # Add response to conversation
-            get_mcp_handler().add_assistant_response(session_id, response)
-            
-            # Record as medical query
-            get_mcp_handler().record_medical_query(session_id, request.query, response, "prescription")
-            
-            return {
-                "response": response,
-                "session_id": session_id,
-                "medicine_sources": result.get("medicine_sources", 0),
-                "status": "success"
-            }
-        else:
-            error_message = f"Error: {result.get('error', 'Unknown error')}"
-            get_mcp_handler().add_assistant_response(session_id, error_message)
-            
-            return {
-                "response": error_message,
-                "session_id": session_id,
-                "status": "error"
-            }
-    
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+async def analyze_prescription_text(req: PrescriptionQuery):
+    if not req.query:
+        raise HTTPException(status_code=400, detail="Query is required")
+    session_id = req.session_id or get_mcp().initialize_session().get("session_id")
+    get_mcp().add_user_message(session_id, f"Prescription query: {req.query}")
 
+    result = get_medical_agent().rag_agent.analyze_prescription_query(req.query)
+    if result.get("status") == "success":
+        text = result.get("response", "Analysis completed.")
+        get_mcp().add_assistant_response(session_id, text)
+        get_mcp().record_medical_query(session_id, req.query, text, "prescription")
+        add_to_conversation_memory(session_id, "Assistant", text)
+        return {"response": text, "session_id": session_id, "status": "success"}
+
+    err = f"Error: {result.get('error', 'Unknown error')}"
+    get_mcp().add_assistant_response(session_id, err)
+    return {"response": err, "session_id": session_id, "status": "error"}
+
+
+# --------------------------------------------------------------------------------------
+# PDF: analyze (NO indexing). If no query -> default summary
+# --------------------------------------------------------------------------------------
 @router.post("/pdf/analyze")
 async def analyze_pdf(
     file: UploadFile = File(...),
     query: Optional[str] = Form(""),
-    session_id: Optional[str] = Form(None)
+    session_id: Optional[str] = Form(None),
 ):
-    """Analyze PDF document and provide description or answer query (without storing in vector DB)"""
+    if file.content_type != "application/pdf":
+        raise HTTPException(status_code=400, detail="File must be a PDF")
+
+    session_id = session_id or get_mcp().initialize_session().get("session_id")
+    pdf_bytes = await file.read()
+    tmp = _write_temp_bytes(pdf_bytes, f"analyze_{file.filename}")
+
     try:
-        # Validate file type
-        if not file.content_type == "application/pdf":
-            raise HTTPException(status_code=400, detail="File must be a PDF")
-        
-        # Read PDF data
-        pdf_data = await file.read()
-        
-        # Create session if not provided
-        if not session_id:
-            session_result = get_mcp_handler().initialize_session()
-            session_id = session_result.get("session_id")
-        
-        # Create temporary file for PDF processing
-        temp_dir = Path("temp_uploads")
-        temp_dir.mkdir(exist_ok=True)
-        temp_file_path = temp_dir / f"temp_analyze_{file.filename}"
-        
-        # Write PDF data to temporary file
-        with open(temp_file_path, "wb") as temp_file:
-            temp_file.write(pdf_data)
-        
-        try:
-            # Import PDF processing modules
-            from langchain_community.document_loaders import PyPDFLoader
-            
-            # Load PDF
-            loader = PyPDFLoader(str(temp_file_path))
-            documents = loader.load()
-            
-            # Extract text content
-            full_text = ""
-            for doc in documents:
-                full_text += doc.page_content + "\n"
-            
-            # Prepare query for LLM
-            if not query or query.strip() == "":
-                # Default description query
-                analysis_query = f"""Please provide a comprehensive summary and description of this PDF document. 
-                
-Include:
-- What type of document this is
-- Main topics and subjects covered
-- Key information and important details
-- Overall structure and organization
+        from langchain_community.document_loaders import PyPDFLoader
 
-PDF Content:
-{full_text[:3000]}...
+        loader = PyPDFLoader(str(tmp))
+        docs = loader.load()
+        full_text = "\n".join([d.page_content for d in docs])
 
-Provide a clear, informative description of what this PDF contains."""
-            else:
-                # User-specific query
-                analysis_query = f"""Based on this PDF document, please answer the following question: {query}
-
-PDF Content:
-{full_text[:3000]}...
-
-Please provide a detailed answer based on the document content."""
-            
-            # Get LLM response
-            medical_agent = get_medical_agent()
-            llm_response = medical_agent.llm.generate_text_response(
-                analysis_query,
-                "You are a helpful AI assistant that analyzes documents and provides clear, informative descriptions."
+        agent = get_medical_agent()
+        if not query or not query.strip():
+            # default summary
+            prompt = (
+                "Summarize the following PDF text for a clinician-friendly audience. "
+                "Include title (if present), section highlights, and 3–5 key takeaways.\n\n"
+                f"{full_text[:15000]}"
             )
-            
-            # Add to conversation memory
-            upload_message = f"Analyzed PDF document: {file.filename}"
-            if query and query.strip():
-                upload_message += f" - Query: {query}"
-            else:
-                upload_message += " - Requested default description"
-            
-            get_mcp_handler().add_user_message(session_id, upload_message)
-            get_mcp_handler().add_assistant_response(session_id, llm_response)
-            
-            return {
-                "response": llm_response,
-                "session_id": session_id,
-                "filename": file.filename,
-                "query_type": "default_description" if not query or query.strip() == "" else "specific_query",
-                "status": "success"
-            }
-            
-        finally:
-            # Clean up temporary file
-            if temp_file_path.exists():
-                temp_file_path.unlink()
-                
-    except Exception as e:
-        logger.error(f"Error analyzing PDF: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        else:
+            prompt = (
+                f"Answer the question based ONLY on this PDF's content.\n\n"
+                f"QUESTION: {query}\n\nPDF TEXT:\n{full_text[:15000]}"
+            )
 
+        resp = agent.llm.generate_text_response(
+            prompt,
+            "You are a helpful AI assistant that analyzes documents and answers clearly.",
+        )
+
+        # remember in conversation + MCP
+        get_mcp().add_user_message(
+            session_id,
+            f"Analyzed PDF: {file.filename} ({'summary' if not query.strip() else 'Q&A'})",
+            "pdf",
+            {"filename": file.filename},
+        )
+        get_mcp().add_assistant_response(session_id, resp)
+        add_to_conversation_memory(session_id, "Assistant", resp)
+
+        # store last PDF text to enable “this pdf” follow-ups
+        try:
+            sess = get_mcp().memory.active_sessions.get(session_id, {})
+            sess.setdefault("context", {})["last_pdf"] = (full_text or "")[:4000]
+            get_mcp().memory._save_session(session_id)
+        except Exception:
+            pass
+
+        return {
+            "response": resp,
+            "session_id": session_id,
+            "filename": file.filename,
+            "query_type": "default_summary" if not query.strip() else "question",
+            "status": "success",
+        }
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+# --------------------------------------------------------------------------------------
+# PDF: upload into KB (indexing in Pinecone)
+# --------------------------------------------------------------------------------------
 @router.post("/pdf/upload")
 async def upload_pdf(
     file: UploadFile = File(...),
     description: Optional[str] = Form(None),
-    session_id: Optional[str] = Form(None)
+    session_id: Optional[str] = Form(None),
 ):
-    """Upload PDF document and add to knowledge base"""
-    try:
-        # Validate file type
-        if not file.content_type == "application/pdf":
-            raise HTTPException(status_code=400, detail="File must be a PDF")
-        
-        # Read PDF data
-        pdf_data = await file.read()
-        
-        # Create session if not provided
-        if not session_id:
-            session_result = get_mcp_handler().initialize_session()
-            session_id = session_result.get("session_id")
-        
-        # Add user message about PDF upload
-        upload_message = f"Uploaded PDF document: {file.filename}"
-        if description:
-            upload_message += f" - {description}"
-        
-        get_mcp_handler().add_user_message(
-            session_id, 
-            upload_message, 
-            "pdf_upload", 
-            {"filename": file.filename, "description": description}
-        )
-        
-        # Process PDF and add to knowledge base
-        result = await process_pdf_to_knowledge_base(pdf_data, file.filename, description)
-        
-        if result.get("status") == "success":
-            success_message = f"Successfully processed '{file.filename}' and added {result.get('chunks_processed', 0)} text chunks to the medical knowledge base. The document is now available for medical queries."
-            
-            get_mcp_handler().add_assistant_response(
-                session_id, 
-                success_message, 
-                "pdf_processing_response"
-            )
-            
-            return {
-                "message": success_message,
-                "session_id": session_id,
-                "chunks_processed": result.get("chunks_processed", 0),
-                "filename": file.filename,
-                "status": "success"
-            }
-        else:
-            error_message = f"Error processing PDF: {result.get('error', 'Unknown error')}"
-            get_mcp_handler().add_assistant_response(session_id, error_message)
-            
-            return {
-                "error": error_message,
-                "session_id": session_id,
-                "status": "error"
-            }
-    
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    if file.content_type != "application/pdf":
+        raise HTTPException(status_code=400, detail="File must be a PDF")
 
+    if not PINECONE_API_KEY:
+        raise HTTPException(status_code=500, detail="PINECONE_API_KEY not configured")
+
+    session_id = session_id or get_mcp().initialize_session().get("session_id")
+    pdf_bytes = await file.read()
+    tmp = _write_temp_bytes(pdf_bytes, file.filename)
+
+    try:
+        from langchain_community.document_loaders import PyPDFLoader
+        from langchain.text_splitter import RecursiveCharacterTextSplitter
+        from core.vector_store import PineconeStore
+        from config.env_config import PINECONE_PDF_INDEX
+
+        loader = PyPDFLoader(str(tmp))
+        documents = loader.load()
+
+        splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+        chunks = splitter.split_documents(documents)
+
+        texts, metas = [], []
+        for i, d in enumerate(chunks):
+            texts.append(d.page_content)
+            metas.append(
+                {
+                    "source": file.filename,
+                    "description": description or f"PDF document: {file.filename}",
+                    "chunk_id": i,
+                    "page": d.metadata.get("page", 0),
+                    "total_chunks": len(chunks),
+                }
+            )
+
+        store = PineconeStore(index_name=PINECONE_PDF_INDEX, dimension=384)
+        store.upsert_texts(texts, metas)
+
+        msg = (
+            f"Successfully processed '{file.filename}' and added "
+            f"{len(texts)} chunks to the medical knowledge base."
+        )
+
+        get_mcp().add_user_message(
+            session_id, f"Uploaded PDF to KB: {file.filename}", "pdf_upload", {"filename": file.filename}
+        )
+        get_mcp().add_assistant_response(session_id, msg, "pdf_processing_response")
+        add_to_conversation_memory(session_id, "Assistant", msg)
+
+        return {"message": msg, "session_id": session_id, "chunks_processed": len(texts), "status": "success"}
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+# --------------------------------------------------------------------------------------
+# Vector DB management
+# --------------------------------------------------------------------------------------
 @router.post("/vector/create-index")
 async def create_vector_index(
     file: UploadFile = File(...),
     index_name: str = Form(...),
     description: Optional[str] = Form(None),
-    session_id: Optional[str] = Form(None)
+    session_id: Optional[str] = Form(None),
 ):
-    """Create a new vector index with uploaded PDF"""
+    if file.content_type != "application/pdf":
+        raise HTTPException(status_code=400, detail="File must be a PDF")
+
+    from pinecone import Pinecone
+
+    if not PINECONE_API_KEY:
+        raise HTTPException(status_code=500, detail="PINECONE_API_KEY not configured")
+
+    session_id = session_id or get_mcp().initialize_session().get("session_id")
+    pdf_bytes = await file.read()
+    tmp = _write_temp_bytes(pdf_bytes, file.filename)
+
     try:
-        # Validate file type
-        if not file.content_type == "application/pdf":
-            raise HTTPException(status_code=400, detail="File must be a PDF")
-        
-        # Read PDF data
-        pdf_data = await file.read()
-        
-        # Create session if not provided
-        if not session_id:
-            session_result = get_mcp_handler().initialize_session()
-            session_id = session_result.get("session_id")
-        
-        # Format index name to be Pinecone-compliant
-        # Convert to lowercase, replace underscores and spaces with hyphens
-        formatted_index_name = f"arobot-medical-pdf-{index_name.lower().replace('_', '-').replace(' ', '-')}"
-        
-        # Create new Pinecone index
-        result = await create_new_pinecone_index(pdf_data, file.filename, formatted_index_name, description)
-        
-        if result.get("status") == "success":
-            success_message = f"Successfully created vector index '{index_name}' with {result.get('chunks_processed', 0)} document chunks."
-            
-            # Log the action
-            get_mcp_handler().add_user_message(
-                session_id, 
-                f"Created new vector index: {formatted_index_name}", 
-                "vector_index_creation", 
-                {"index_name": formatted_index_name, "user_name": index_name, "filename": file.filename}
+        from langchain_community.document_loaders import PyPDFLoader
+        from langchain.text_splitter import RecursiveCharacterTextSplitter
+        from core.vector_store import PineconeStore
+
+        loader = PyPDFLoader(str(tmp))
+        documents = loader.load()
+
+        splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+        chunks = splitter.split_documents(documents)
+
+        texts, metas = [], []
+        for i, d in enumerate(chunks):
+            texts.append(d.page_content)
+            metas.append(
+                {
+                    "source": file.filename,
+                    "description": description or f"PDF document: {file.filename}",
+                    "chunk_id": i,
+                    "page": d.metadata.get("page", 0),
+                    "total_chunks": len(chunks),
+                    "index_name": index_name,
+                }
             )
-            
-            get_mcp_handler().add_assistant_response(
-                session_id, 
-                success_message, 
-                "vector_index_response"
-            )
-            
-            return {
-                "message": success_message,
-                "session_id": session_id,
-                "chunks_processed": result.get("chunks_processed", 0),
-                "index_name": formatted_index_name,
-                "user_name": index_name,
-                "status": "success"
-            }
-        else:
-            error_message = f"Error creating vector index: {result.get('error', 'Unknown error')}"
-            return {
-                "error": error_message,
-                "session_id": session_id,
-                "status": "error"
-            }
-    
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+
+        formatted = f"arobot-medical-pdf-{index_name.lower().replace('_','-').replace(' ','-')}"
+        store = PineconeStore(index_name=formatted, dimension=384)
+        store.upsert_texts(texts, metas)
+
+        msg = f"Created vector index '{formatted}' with {len(texts)} chunks."
+        get_mcp().add_user_message(session_id, f"Created index {formatted}", "vector_index_creation")
+        get_mcp().add_assistant_response(session_id, msg, "vector_index_response")
+        add_to_conversation_memory(session_id, "Assistant", msg)
+
+        return {"message": msg, "session_id": session_id, "index_name": formatted, "status": "success"}
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+
 
 @router.get("/vector/indexes")
 async def list_vector_indexes():
-    """Get list of all available vector indexes"""
     try:
-        # Import here to avoid circular imports
-        from config.env_config import PINECONE_API_KEY
-        import pinecone
         from pinecone import Pinecone
-        
-        # Initialize Pinecone
+
         pc = Pinecone(api_key=PINECONE_API_KEY)
-        
-        # Get list of indexes
-        indexes = pc.list_indexes()
-        
-        # Format the response
-        index_list = []
-        for index in indexes:
-            index_info = {
-                "name": index.name,
-                "dimension": index.dimension,
-                "metric": index.metric,
-                "host": index.host,
-                "status": "ready" if index.status.ready else "not_ready"
-            }
-            
-            # Try to get stats for the index
+        out = []
+        for idx in pc.list_indexes():
             try:
-                index_connection = pc.Index(index.name)
-                stats = index_connection.describe_index_stats()
-                index_info["total_vector_count"] = stats.total_vector_count
-                index_info["namespaces"] = len(stats.namespaces) if stats.namespaces else 0
-            except Exception as e:
-                index_info["total_vector_count"] = 0
-                index_info["namespaces"] = 0
-                index_info["error"] = str(e)
-            
-            index_list.append(index_info)
-        
-        return {
-            "indexes": index_list,
-            "total_count": len(index_list),
-            "status": "success"
-        }
-        
+                conn = pc.Index(idx.name)
+                stats = conn.describe_index_stats()
+                total = (
+                    getattr(stats, "total_vector_count", 0)
+                    if hasattr(stats, "total_vector_count")
+                    else (stats.get("total_vector_count", 0) if isinstance(stats, dict) else 0)
+                )
+                namespaces = getattr(stats, "namespaces", {}) if hasattr(stats, "namespaces") else stats.get("namespaces", {})
+            except Exception:
+                total, namespaces = 0, {}
+            out.append(
+                {
+                    "name": idx.name,
+                    "dimension": idx.dimension,
+                    "metric": idx.metric,
+                    "host": idx.host,
+                    "status": "ready" if idx.status.ready else "not_ready",
+                    "total_vector_count": total,
+                    "namespaces": len(namespaces) if namespaces else 0,
+                }
+            )
+        return {"indexes": out, "total_count": len(out), "status": "success"}
     except Exception as e:
-        return {
-            "error": str(e),
-            "status": "error"
-        }
+        return {"error": str(e), "status": "error"}
 
+
+# --------------------------------------------------------------------------------------
 # Medicine search
+# --------------------------------------------------------------------------------------
 @router.post("/search/medicine")
-async def search_medicine_by_condition(request: MedicineSearch):
-    """Search for medicines that treat a specific condition"""
-    try:
-        # Create session if not provided
-        session_id = request.session_id
-        if not session_id:
-            session_result = get_mcp_handler().initialize_session()
-            session_id = session_result.get("session_id")
-        
-        # Add user query to conversation
-        query_message = f"Search medicines for condition: {request.condition}"
-        get_mcp_handler().add_user_message(session_id, query_message)
-        
-        # Search using medical agent
-        result = get_medical_agent().search_medicine_by_condition(request.condition)
-        
-        if result.get("status") == "success":
-            response = result.get("response", "Search completed.")
-            
-            # Add response to conversation
-            get_mcp_handler().add_assistant_response(session_id, response)
-            
-            # Record as medical query
-            get_mcp_handler().record_medical_query(session_id, query_message, response, "medicine_search")
-            
-            return {
-                "response": response,
-                "condition": request.condition,
-                "session_id": session_id,
-                "status": "success"
-            }
-        else:
-            error_message = f"Error: {result.get('error', 'Unknown error')}"
-            get_mcp_handler().add_assistant_response(session_id, error_message)
-            
-            return {
-                "response": error_message,
-                "session_id": session_id,
-                "status": "error"
-            }
-    
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+async def search_medicine_by_condition(req: MedicineSearch):
+    session_id = req.session_id or get_mcp().initialize_session().get("session_id")
+    get_mcp().add_user_message(session_id, f"Search medicines for: {req.condition}")
+    result = get_medical_agent().search_medicine_by_condition(req.condition)
+    if result.get("status") == "success":
+        text = result.get("response", "")
+        get_mcp().add_assistant_response(session_id, text)
+        get_mcp().record_medical_query(session_id, req.condition, text, "medicine_search")
+        add_to_conversation_memory(session_id, "Assistant", text)
+        return {"response": text, "condition": req.condition, "session_id": session_id, "status": "success"}
+    err = f"Error: {result.get('error', 'Unknown error')}"
+    get_mcp().add_assistant_response(session_id, err)
+    return {"response": err, "session_id": session_id, "status": "error"}
 
-# System status
+
+# --------------------------------------------------------------------------------------
+# Weather (Open-Meteo) – JSON endpoint
+# --------------------------------------------------------------------------------------
+@router.get("/weather")
+async def weather(lat: float, lon: float):
+    try:
+        try:
+            import openmeteo_requests  # type: ignore
+            import requests_cache  # type: ignore
+            from retry_requests import retry  # type: ignore
+
+            cache_session = requests_cache.CachedSession(".cache", expire_after=3600)
+            retry_session = retry(cache_session, retries=5, backoff_factor=0.2)
+            client = openmeteo_requests.Client(session=retry_session)
+            url = "https://api.open-meteo.com/v1/forecast"
+            params = {"latitude": lat, "longitude": lon, "hourly": "temperature_2m"}
+            responses = client.weather_api(url, params=params)
+            r = responses[0]
+            hourly = r.Hourly()
+            temps = list(hourly.Variables(0).ValuesAsNumpy())
+            return {
+                "coords": [r.Latitude(), r.Longitude()],
+                "elevation": r.Elevation(),
+                "utc_offset_seconds": r.UtcOffsetSeconds(),
+                "hourly_temp_2m_c": temps[:24],
+                "status": "success",
+            }
+        except Exception:
+            # Fallback plain HTTP (no cache/retry libs required)
+            import requests
+
+            url = "https://api.open-meteo.com/v1/forecast"
+            resp = requests.get(url, params={"latitude": lat, "longitude": lon, "hourly": "temperature_2m"}, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            return {"raw": data, "status": "success"}
+    except Exception as e:
+        return {"error": str(e), "status": "error"}
+
+
+# --------------------------------------------------------------------------------------
+# System status and KB stats passthroughs
+# --------------------------------------------------------------------------------------
 @router.get("/system/status")
 async def get_system_status():
-    """Get system status and health"""
-    try:
-        status = get_medical_agent().get_system_status()
-        return status
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return get_medical_agent().get_system_status()
 
-# Knowledge base endpoints
+
 @router.get("/knowledge/stats")
 async def get_knowledge_base_stats():
-    """Get knowledge base statistics"""
-    try:
-        stats = get_medical_agent().rag_agent.get_knowledge_base_stats()
-        return stats
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return get_medical_agent().rag_agent.get_knowledge_base_stats()
