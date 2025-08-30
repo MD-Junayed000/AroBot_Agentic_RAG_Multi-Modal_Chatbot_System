@@ -1,41 +1,80 @@
+# core/llm_handler.py
 """
 LLM Handler for text and vision models using Ollama
-- Uses ChatOllama for proper system/user message handling
-- Supports LLaVA vision via Ollama client.chat with base64 images
-- Provides RAG helpers over Pinecone PDF & medicine indexes
-- Keeps backward-compatible methods used elsewhere in the codebase
+- ChatOllama for text (proper system/user messages)
+- LLaVA via ollama.chat for vision
+- OCR-first utilities for fast image Q&A
+- Medicine helper that resolves BD brands + optional prices
+- RAG helpers over Pinecone PDF & medicine indexes
 """
 
 from __future__ import annotations
 
+import os
+import io
+import re
 import base64
 import logging
 from typing import List, Dict, Any, Optional
 
+from PIL import Image
 import ollama
 from langchain_ollama import ChatOllama
 from langchain.schema import HumanMessage, SystemMessage
 from langsmith import traceable
 
+from utils.web_search import WebSearchTool
+from utils.ocr_pipeline import OCRPipeline
 from config.env_config import (
+    OCR_LANGUAGE,
     OLLAMA_BASE_URL,
     OLLAMA_TEXT_MODEL,
     OLLAMA_VISION_MODEL,
     PINECONE_PDF_INDEX,
     PINECONE_MEDICINE_INDEX,
+    PINECONE_IMAGE_INDEX,
+    PINECONE_BD_PHARMACY_INDEX,
 )
-
 from .vector_store import PineconeStore
+from core.image_index import CLIPImageIndex
 
 logger = logging.getLogger(__name__)
 
-# Conservative, medicine-first system prompt
+# --------------------------------------------------------------------------- #
+# System prompts
+# --------------------------------------------------------------------------- #
 DEFAULT_SYSTEM = (
-    "You are AroBot, a careful medical assistant with MANDATORY conversation memory utilization. "
-    "Prioritize medical/clinical interpretations. When a token (e.g., 'Napa') is ambiguous, assume the "
-    "medicine/brand meaning first. Use provided context verbatim. Cite uncertainties briefly and advise "
-    "consulting a clinician for medical decisions."
+    "You are AroBot, a careful medical assistant. Be concise and clinically safe. "
+    "Prefer Bangladesh-specific drug/brand context when ambiguous (e.g., 'Napa' → paracetamol brand). "
+    "Cite uncertainty briefly and advise consulting a clinician for decisions."
 )
+
+SYSTEM_GENERAL = (
+    "You are AroBot, a helpful, concise assistant. Answer clearly and directly. "
+    "Use provided context verbatim when present."
+)
+
+
+# ------------------------------- helpers ---------------------------------- #
+def _downscale_jpeg(data: bytes, max_side: int = 1024) -> bytes:  # type: ignore[misc]
+    """Downscale/normalize an image quickly to keep vision prompt light."""
+    im = Image.open(io.BytesIO(data)).convert("RGB")
+    w, h = im.size
+    scale = max(w, h) / float(max_side)
+    if scale > 1.0:
+        im = im.resize((int(w / scale), int(h / scale)), Image.LANCZOS)
+    out = io.BytesIO()
+    im.save(out, format="JPEG", quality=85, optimize=True)
+    return out.getvalue()
+
+
+def _clean_conv_ctx(s: str, limit: int = 800) -> str:
+    """Strip any 'You are ...' style system leftovers & trim length."""
+    if not s:
+        return ""
+    s = re.sub(r"(?i)^\s*you are .*?$", "", s.strip())
+    s = re.sub(r"(?i)\b(system|instruction|prompt)\b.*", "", s)
+    return s[:limit]
 
 
 class LLMHandler:
@@ -47,11 +86,28 @@ class LLMHandler:
         self.text_model = OLLAMA_TEXT_MODEL
         self.vision_model = OLLAMA_VISION_MODEL
 
+        self.bd_pharmacy_store = PineconeStore(index_name=PINECONE_BD_PHARMACY_INDEX, dimension=384)
+        self.image_index = CLIPImageIndex(index_name=PINECONE_IMAGE_INDEX)
+
+        # Tools
+        self.web = WebSearchTool()
+
         # Text LLM (chat interface so system prompts work)
         self.text_llm = ChatOllama(
             model=self.text_model,
             base_url=self.base_url,
             temperature=0.2,
+            # keep outputs tight and fast
+            model_kwargs={"num_ctx": 2048, "num_predict": 320, "top_p": 0.9},
+        )
+
+        # Tiny/fast model for formatting/normalizing tasks (falls back to main model)
+        fast_model = os.getenv("OLLAMA_FAST_TEXT_MODEL", self.text_model)
+        self.fast_llm = ChatOllama(
+            model=fast_model,
+            base_url=self.base_url,
+            temperature=0.1,
+            model_kwargs={"num_ctx": 1024, "num_predict": 200, "top_p": 0.9},
         )
 
         # Vision client (LLaVA)
@@ -70,7 +126,6 @@ class LLMHandler:
             logger.warning(f"Medicine RAG store init failed: {e}")
 
     # --------------------------- Core text/vision --------------------------- #
-
     @traceable(name="text_completion")
     def generate_text_response(self, prompt: str, system_prompt: Optional[str] = None) -> str:
         """Generate a response using the text LLM with an optional system prompt."""
@@ -80,7 +135,6 @@ class LLMHandler:
                 HumanMessage(content=prompt),
             ]
             resp = self.text_llm.invoke(messages)
-            # ChatOllama returns an AIMessage object with .content
             return getattr(resp, "content", str(resp))
         except Exception as e:
             logger.error(f"Error in text generation: {e}")
@@ -88,7 +142,10 @@ class LLMHandler:
 
     @traceable(name="vision_completion")
     def generate_vision_response(
-        self, prompt: str, image_path: Optional[str] = None, image_data: Optional[bytes] = None
+        self,
+        prompt: str,
+        image_path: Optional[str] = None,
+        image_data: Optional[bytes] = None,
     ) -> str:
         """Generate a response using a vision LLM (LLaVA) with an image."""
         try:
@@ -101,200 +158,237 @@ class LLMHandler:
             else:
                 return "No image provided."
 
-            # Use chat endpoint for images with LLaVA
             r = self.client.chat(
                 model=self.vision_model,
                 messages=[{"role": "user", "content": prompt, "images": images}],
                 stream=False,
+                options={"temperature": 0.1, "num_ctx": 2048, "top_p": 0.9},
+                keep_alive="30m",
             )
-            # Response shape: {"message": {"role": "assistant","content": "..."} , ...}
             return r.get("message", {}).get("content", "")
         except Exception as e:
             logger.error(f"Error in vision generation: {e}")
             return f"Error analyzing image: {str(e)}"
 
+    # ------------------------------- OCR utils ------------------------------ #
+    def _fast_format(self, prompt: str) -> str:
+        try:
+            resp = self.fast_llm.invoke([SystemMessage(content=DEFAULT_SYSTEM), HumanMessage(content=prompt)])
+            return getattr(resp, "content", str(resp))
+        except Exception:
+            # fallback to main model
+            return self.generate_text_response(prompt, system_prompt=DEFAULT_SYSTEM)
+
+    def ocr_only(self, image_bytes: bytes) -> Dict[str, Any]:
+        """Very fast OCR-only parse used when no complex vision is needed."""
+        pipe = OCRPipeline(lang=OCR_LANGUAGE)
+        lines, items = pipe.run_on_bytes(_downscale_jpeg(image_bytes))
+        return {
+            "raw_text": "\n".join(lines),
+            "lines": lines,
+            "structured_items": items,
+            "item_count": len(items),
+        }
+
     # ------------------------------- RAG ----------------------------------- #
+    def _select_namespaces(self, q: str) -> list[str]:
+        ql = q.lower()
+        if any(k in ql for k in ["law", "policy", "act", "regulation", "dgda"]):
+            return ["policy"]
+        if any(k in ql for k in ["otc", "self care", "over the counter"]):
+            return ["otc", "prescribing", "guidelines"]
+        if any(k in ql for k in ["dose", "dosing", "indication", "contraindication", "interaction", "pregnancy"]):
+            return ["prescribing", "guidelines", "otc"]
+        if any(k in ql for k in ["anatomy", "nerve", "artery", "muscle", "bone"]):
+            return ["textbook"]
+        # default bias to clinical guidance first
+        return ["guidelines", "prescribing", "otc"]
 
     def _gather_rag_context(self, query: str, extra_ctx: Optional[List[str]] = None) -> List[str]:
-        """Collect context snippets from Pinecone indexes + any extra context provided."""
         ctx: List[str] = []
         if extra_ctx:
             ctx.extend([c for c in extra_ctx if isinstance(c, str) and c.strip()])
 
-        # Query PDF KB
+        # Query BD pharmacy index across the selected namespaces
+        if self.bd_pharmacy_store:
+            for ns in self._select_namespaces(query):
+                try:
+                    ctx.extend(self.bd_pharmacy_store.query(query, top_k=4, namespace=ns))
+                except Exception as e:
+                    logger.warning(f"BD pharmacy query failed ({ns}): {e}")
+
+        # Optional other stores (global PDFs / medicine)
         try:
             if self.pdf_store:
-                ctx.extend(self.pdf_store.query(query, top_k=4))
+                ctx.extend(self.pdf_store.query(query, top_k=2))
         except Exception as e:
             logger.warning(f"PDF RAG query failed: {e}")
 
-        # Query Medicine KB
         try:
             if self.medicine_store:
-                ctx.extend(self.medicine_store.query(query, top_k=4))
+                ctx.extend(self.medicine_store.query(query, top_k=2))
         except Exception as e:
             logger.warning(f"Medicine RAG query failed: {e}")
 
-        # Deduplicate & trim
+        # Dedup + trim
         uniq, seen = [], set()
         for c in ctx:
             c = (c or "").strip()
             if c and c not in seen:
                 seen.add(c)
-                uniq.append(c[:1500])  # keep prompt small
-        return uniq[:8]
+                uniq.append(c[:1200])
+        return uniq[:6]
 
     def _prompt_with_context(self, query: str, context: List[str], conversation_context: str = "") -> str:
         ctx_block = "\n\n---\n".join(context) if context else "No relevant context."
+        conv = _clean_conv_ctx(conversation_context)
         return (
-            f"{conversation_context}\n\n"
-            f"Use the following CONTEXT to answer the user's medical question. "
-            f"When possible, ground the answer explicitly in the context. "
-            f"If the context is insufficient, say so briefly and provide safe general information.\n\n"
-            f"CONTEXT START\n---\n{ctx_block}\n---\nCONTEXT END\n\n"
-            f"QUESTION: {query}"
+            (f"{conv}\n\n" if conv else "")
+            + "Use the CONTEXT to answer the user's medical question. "
+              "Prefer Bangladesh drug/brand specifics when relevant. "
+              "If context is insufficient, say so briefly and give safe general guidance.\n\n"
+              f"CONTEXT START\n---\n{ctx_block}\n---\nCONTEXT END\n\n"
+              f"QUESTION: {query}"
         )
 
     # ----------------------- High-level convenience APIs ------------------- #
+    @staticmethod
+    def _safety_footer(text: str) -> str:
+        red = ("chest pain" in text.lower() or "stroke" in text.lower() or "shortness of breath" in text.lower())
+        if red:
+            return text + "\n\n**If this is about a real person with urgent symptoms, seek emergency care immediately.**"
+        return text
 
     @traceable(name="medical_query")
     def answer_medical_query(
-        self, query: str, context: Optional[List[str]] = None, conversation_context: str = ""
+        self,
+        query: str,
+        context: Optional[List[str]] = None,
+        conversation_context: str = "",
     ) -> str:
-        """Answer medical queries using RAG + conversation memory string."""
         rag_ctx = self._gather_rag_context(query, extra_ctx=context)
         prompt = self._prompt_with_context(query, rag_ctx, conversation_context)
-        return self.generate_text_response(prompt, system_prompt=DEFAULT_SYSTEM)
+        out = self.generate_text_response(prompt, system_prompt=DEFAULT_SYSTEM)
+        return self._safety_footer(out)
 
-    def answer_over_pdf_text(
-        self, question_or_none: Optional[str], pdf_text: str, conversation_context: str = ""
-    ) -> str:
-        """
-        If a question is provided, answer grounded on that PDF text; otherwise produce a concise summary.
-        """
+    def answer_over_pdf_text(self, question_or_none: Optional[str], pdf_text: str, conversation_context: str = "") -> str:
         if not pdf_text or not pdf_text.strip():
             return "The PDF appears to contain no readable text."
-
         if not question_or_none:
             prompt = (
                 "Summarize the following PDF text for a clinician-friendly audience. "
-                "Include title (if present), section highlights, and 3–5 key takeaways.\n\n"
+                "Include section highlights and 3–5 key takeaways.\n\n"
                 f"{pdf_text[:15000]}"
             )
             return self.generate_text_response(prompt, system_prompt=DEFAULT_SYSTEM)
-        else:
-            return self.answer_medical_query(
-                question_or_none, context=[pdf_text], conversation_context=conversation_context
-            )
+        return self.answer_medical_query(question_or_none, context=[pdf_text], conversation_context=conversation_context)
 
+    # ------------------------ Prescription (OCR-first) --------------------- #
     @traceable(name="prescription_analysis")
     def analyze_prescription(
-        self, image_path: Optional[str] = None, image_data: Optional[bytes] = None, ocr_text: Optional[str] = None
+        self,
+        image_path: Optional[str] = None,
+        image_data: Optional[bytes] = None,
+        ocr_text: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Analyze a prescription image with vision and optionally enrich with OCR text.
-        Returns a structured dict with analyses.
+        Do OCR first (fast), then a tiny model to normalize fields.
+        Fall back to a single vision pass if OCR yields nothing.
         """
-        vision_prompt = (
-            "You are a medical assistant analyzing a prescription image. Extract:\n"
-            "1) Patient info (name/age if visible)\n"
-            "2) Doctor/clinic details\n"
-            "3) Medications (name, strength, dosage, frequency, duration)\n"
-            "4) Diagnoses/indications or symptoms\n"
-            "5) Instructions/notes\n\n"
-            "Return a concise JSON-like summary. Only include what you can clearly identify."
-        )
-
         try:
-            vision_analysis = self.generate_vision_response(vision_prompt, image_path, image_data)
+            if not ocr_text:
+                if image_data:
+                    ox = self.ocr_only(image_data)
+                elif image_path:
+                    with open(image_path, "rb") as f:
+                        ox = self.ocr_only(f.read())
+                else:
+                    return {"error": "No image provided", "status": "error"}
+                ocr_text = ox.get("raw_text", "")
 
-            if ocr_text:
-                text_prompt = (
-                    "Combine the following OCR text with the vision analysis of a prescription to improve accuracy. "
-                    "Return a single concise JSON-like object with medications and fields where confidently extracted.\n\n"
-                    f"OCR TEXT:\n{ocr_text[:5000]}\n\nVISION ANALYSIS:\n{vision_analysis}"
+            if not (ocr_text or "").strip():
+                # final fallback to vision
+                vision_prompt = (
+                    "Read the prescription image and extract: patient name/age (if visible), "
+                    "doctor/clinic, medicines (name, strength, dosage, frequency, duration), "
+                    "diagnosis/notes. Return concise JSON-like text."
                 )
-                enhanced = self.generate_text_response(text_prompt, system_prompt=DEFAULT_SYSTEM)
-                return {
-                    "vision_analysis": vision_analysis,
-                    "ocr_text": ocr_text,
-                    "enhanced_analysis": enhanced,
-                    "status": "success",
-                }
+                vision_analysis = self.generate_vision_response(vision_prompt, image_path, image_data)
+                return {"vision_analysis": vision_analysis, "status": "success"}
 
-            return {"vision_analysis": vision_analysis, "status": "success"}
+            prompt = (
+                "You are parsing a prescription. From the OCR text below, extract a compact JSON with keys: "
+                "patient_name, doctor, clinic, diagnosis, medications[]. Each medication has name, strength, unit, "
+                "dose, frequency, duration, and any note. Only include fields you can infer.\n\n"
+                f"OCR:\n{ocr_text[:6000]}"
+            )
+            normalized = self._fast_format(prompt)
+            return {
+                "ocr_results": {"raw_text": ocr_text},
+                "prescription_analysis": normalized,
+                "status": "success",
+            }
 
         except Exception as e:
-            logger.error(f"Error in prescription analysis: {e}")
+            logger.error(f"Rx analyze error: {e}")
             return {"error": str(e), "status": "error"}
 
-    # ------------------------ Conversation helpers ------------------------ #
+    def answer_over_ocr_text(self, question: str, ocr_text: str) -> str:
+        """High-precision QA directly over the last image's OCR."""
+        ask = question.strip()
+        prompt = (
+            "Answer the question using ONLY this OCR text extracted from the last image. "
+            "If the item is a proper name (patient/doctor/clinic/brand), return it verbatim.\n\n"
+            f"OCR TEXT:\n{ocr_text[:6000]}\n\nQUESTION: {ask}"
+        )
+        return self._fast_format(prompt)
 
-    def process_conversation_context(self, conversation_context: str) -> Dict[str, Any]:
-        """
-        Keep this method for backward compatibility.
-        Parses a conversation transcript for simple personal/medical cues.
-        """
-        if not conversation_context or not conversation_context.strip():
-            return {"has_context": False, "extracted_info": {}}
+    # --------------------------- Medicines (BD) ---------------------------- #
+    @traceable(name="answer_medicine_bd")
+    def answer_medicine(self, query: str, want_price: bool = False) -> str:
+        # 1) Resolve using live Medex (cached in sqlite) -> covers all BD brands generically
+        rec = self.web.resolve_bd_medicine(query)
+        brand_line = ""
+        if rec.get("status") == "success":
+            brand_line = (
+                f"**Brand (BD):** {rec['brand']}"
+                f"{'  |  Generic: ' + rec.get('generic','') if rec.get('generic') else ''}"
+                f"{'  |  ' + rec.get('form','') if rec.get('form') else ''}"
+                f"{'  ' + rec.get('strength','') if rec.get('strength') else ''}"
+                f"{'  |  ' + rec.get('company','') if rec.get('company') else ''}"
+                f"\nSource: {rec.get('source','')}"
+            )
 
-        lines = conversation_context.split("\n")
-        structured = {
-            "user_messages": [],
-            "assistant_messages": [],
-            "personal_info": {},
-            "medical_context": [],
-            "conversation_flow": [],
-        }
+        # 2) Build a crisp medical summary (brand+generic terms seed the RAG)
+        rag_terms = [query]
+        if rec.get("status") == "success":
+            if rec.get("generic"):
+                rag_terms.append(rec["generic"])
+            if rec.get("brand"):
+                rag_terms.append(rec["brand"])
 
-        current_speaker = None
-        import re
+        ctx = self._gather_rag_context(" ; ".join(rag_terms))
+        prompt = self._prompt_with_context(
+            "Summarize indication/uses, adult dosing ranges, key cautions (renal/hepatic, pregnancy), "
+            "major interactions, and common side effects. Prefer Bangladesh context and plain English.",
+            ctx,
+        )
+        summary = self._fast_format(prompt)
 
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
+        # 3) Price (fast, cached)
+        price_line = ""
+        if want_price and rec.get("status") == "success":
+            p = self.web.get_bd_medicine_price(rec["brand"])
+            if p.get("status") == "success":
+                price_line = f"\n\n**Bangladesh retail price ({p['source']}):** {p['price']}"
 
-            if line.startswith("User:"):
-                current_speaker = "user"
-                content = line.replace("User:", "").strip()
-                structured["user_messages"].append(content)
+        # 4) Fallback if resolver failed
+        if not brand_line:
+            return summary + (("\n\n" + price_line) if price_line else "")
 
-                low = content.lower()
-                if "i am dr" in low:
-                    m = re.search(r"i am dr\.?\s+([a-z]+\s+[a-z]+)", low)
-                    if m:
-                        structured["personal_info"]["name"] = m.group(1).title()
-
-                if "department" in low:
-                    m = re.search(r"(\w+)\s+department", low)
-                    if m:
-                        structured["personal_info"]["department"] = m.group(1)
-
-                if "hospital" in low or "medical center" in low:
-                    m = re.search(r"(?:at|from|in)\s+([a-z\s]+(?:hospital|medical center))", low)
-                    if m:
-                        structured["personal_info"]["hospital"] = m.group(1).title()
-
-                medical_keywords = ["patient", "medication", "prescription", "symptom", "diagnosis", "treatment"]
-                if any(k in low for k in medical_keywords):
-                    structured["medical_context"].append(content)
-
-            elif line.startswith("Assistant:") or line.startswith("AroBot:"):
-                current_speaker = "assistant"
-                content = line.replace("Assistant:", "").replace("AroBot:", "").strip()
-                structured["assistant_messages"].append(content)
-
-            if current_speaker:
-                structured["conversation_flow"].append(
-                    {"speaker": current_speaker, "content": content if current_speaker == "user" else line}
-                )
-
-        structured["has_context"] = True
-        return structured
+        return brand_line + "\n\n" + summary + price_line
 
     # --------------------------- Model utilities --------------------------- #
-
     def check_model_availability(self) -> Dict[str, Any]:
         """Check if text/vision models are listed by the local Ollama server."""
         try:
@@ -323,4 +417,18 @@ class LLMHandler:
             }
         except Exception as e:
             logger.error(f"Error checking model availability: {e}")
-            return {"text_model_available": False, "vision_model_available": False, "error": str(e)}
+            return {
+                "text_model_available": False,
+                "vision_model_available": False,
+                "error": str(e),
+            }
+
+    def retrieve_similar_anatomy(self, image_bytes: bytes, top_k: int = 6):
+        pil = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        res = self.image_index.query_by_image(pil, top_k=top_k, namespace="anatomy")
+        hits = []
+        for m in res.get("matches", []):
+            md = m.get("metadata", {})
+            title = md.get("doc") or md.get("title", "")
+            hits.append(f"[Figure match ~{int(m.get('score', 0) * 100)}%] {title}, p.{md.get('page')}: {md.get('caption', '')}")
+        return hits

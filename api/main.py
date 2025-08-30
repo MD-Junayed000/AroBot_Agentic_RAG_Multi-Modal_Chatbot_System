@@ -23,10 +23,10 @@ app = FastAPI(
     debug=DEBUG,
 )
 
-# CORS
+# CORS (loose for dev; tighten for prod)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # tighten for prod
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -44,7 +44,7 @@ app.include_router(router, prefix="/api/v1")
 async def root():
     return RedirectResponse(url="/chat")
 
-# Top-level chat UI (same page as /api/v1/chat for convenience)
+# Chat UI (same page as /api/v1/chat for convenience)
 @app.get("/chat", response_class=HTMLResponse)
 async def root_chat_interface(request: Request):
     return templates.TemplateResponse("chat_enhanced.html", {"request": request})

@@ -1082,9 +1082,11 @@
 
         sendButton.disabled = true;
 
-        if (message) addMessageToUI("user", message);
-        if (currentFile)
-          addMessageToUI("user", `📎 Uploaded: ${currentFile.file.name}`);
+        // ONE bubble for both text + attachment
+        const pieces = [];
+        if (message) pieces.push(message);
+        if (currentFile) pieces.push(`📎 ${currentFile.file.name}`);
+        addMessageToUI("user", pieces.join("\n\n"));
 
         messageInput.value = "";
         messageInput.style.height = "auto";
@@ -1092,39 +1094,33 @@
 
         try {
           let response;
-          if (currentFile && currentFile.type === "image") {
+          if (currentFile) {
             const formData = new FormData();
             formData.append("file", currentFile.file);
-            if (message) formData.append("query", message);
-            // classify type quickly from message text
+            if (message) formData.append("question", message); // server reads 'question'
+            formData.append("session_id", currentServerSessionId);
+            // Prescription vs general quick guess (same as before)
             const guessType = (message || "")
               .toLowerCase()
-              .match(/rx|prescription|doctor|medic|pill|tablet/)
+              .match(/rx|prescription|doctor|pill|tablet/)
               ? "prescription"
               : "general";
-            formData.append("image_type", guessType);
-            formData.append("session_id", currentServerSessionId);
-
-            response = await fetch("/api/v1/prescription/upload", {
-              method: "POST",
-              body: formData,
-            });
-          } else if (currentFile && currentFile.type === "pdf") {
-            const formData = new FormData();
-            formData.append("file", currentFile.file);
-            if (message) formData.append("query", message); // server expects 'query'
-            formData.append("session_id", currentServerSessionId);
-
-            response = await fetch("/api/v1/pdf/analyze", {
-              method: "POST",
-              body: formData,
-            });
+            // Use the compatibility endpoint that fans into the new fast OCR-first path
+            response = await fetch(
+              guessType === "prescription"
+                ? "/api/v1/prescription/upload"
+                : "/api/v1/image/analyze",
+              {
+                method: "POST",
+                body: formData,
+              }
+            );
           } else {
             response = await fetch("/api/v1/chat", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
-                message: message,
+                message,
                 session_id: currentServerSessionId,
                 use_web_search: true,
               }),
@@ -1132,16 +1128,12 @@
           }
 
           hideTyping();
-
           if (response.ok) {
             const data = await response.json();
             let responseMessage =
-              data.response ||
-              data.analysis ||
-              data.message ||
-              "I received your message.";
+              data.response || data.analysis || data.message || "Done.";
             if (data.chunks_processed) {
-              responseMessage += `\n\n📊 Processed ${data.chunks_processed} text chunks from the document.`;
+              responseMessage += `\n\n📊 Processed ${data.chunks_processed} chunks.`;
             }
             addMessageToUI("assistant", responseMessage);
             setTimeout(() => saveChatSession(), 400);
@@ -1149,19 +1141,13 @@
             const errorData = await response.json().catch(() => ({}));
             addMessageToUI(
               "assistant",
-              `❌ ${
-                errorData.detail ||
-                "Sorry, I encountered an error. Please try again."
-              }`
+              `❌ ${errorData.detail || "Sorry, something went wrong."}`
             );
           }
         } catch (error) {
           hideTyping();
-          addMessageToUI(
-            "assistant",
-            "❌ Connection error. Please check your internet connection and try again."
-          );
-          console.error("Error:", error);
+          addMessageToUI("assistant", "❌ Connection error.");
+          console.error(error);
         }
 
         removeFile();

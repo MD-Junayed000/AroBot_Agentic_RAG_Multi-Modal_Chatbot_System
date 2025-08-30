@@ -8,28 +8,23 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+MAX_BYTES = 3_900_000  # keep a buffer under Pinecone's 4 MB limit
+
 class PineconeStore:
-    def __init__(self, index_name: str = None, dimension: int = 384, metric: str = "cosine"):
+    def __init__(self, index_name: str = None, dimension: int = 384, metric: str = "cosine", batch_size: int = None):
         self.index_name = index_name or os.environ.get("PINECONE_INDEX", "arobot-default")
-        self.batch_size = 64  # Safe batch size to avoid 4MB limit
-        self.max_metadata_chars = 1200  # Limit metadata size
-        
-        # Get API key from config
+        self.batch_size = batch_size or int(os.getenv("PINECONE_BATCH", "32"))
+        self.max_metadata_chars = 1200
         from config.env_config import PINECONE_API_KEY
-        
-        # Initialize Pinecone client
         self.pc = Pinecone(api_key=PINECONE_API_KEY)
-        
-        # Create index if it doesn't exist
-        existing_indexes = [idx.name for idx in self.pc.list_indexes()]
-        if self.index_name not in existing_indexes:
+        existing = [idx.name for idx in self.pc.list_indexes()]
+        if self.index_name not in existing:
             self.pc.create_index(
                 name=self.index_name,
                 dimension=dimension,
                 metric=metric,
-                spec=ServerlessSpec(cloud="aws", region="us-east-1")
+                spec=ServerlessSpec(cloud="aws", region="us-east-1"),
             )
-        
         self.index = self.pc.Index(self.index_name)
         self.embedder = Embedder()
 
@@ -69,61 +64,60 @@ class PineconeStore:
         if checkpoint_file.exists():
             checkpoint_file.unlink()
 
-    def upsert_texts(self, texts: List[str], metadatas: List[Dict]):
-        """Upsert texts with safe batching and checkpointing"""
-        # Load checkpoint
+    def _safe_upsert(self, vectors, namespace: str | None):
+        # Recursively split until each request fits under the byte budget
+        stack = [vectors]
+        while stack:
+            batch = stack.pop()
+            if not batch:
+                continue
+            size = len(json.dumps(batch, default=str).encode("utf-8"))
+
+            if size > MAX_BYTES and len(batch) > 1:
+                mid = len(batch) // 2
+                stack.append(batch[:mid])
+                stack.append(batch[mid:])
+                continue
+            if size > MAX_BYTES:
+                # last-resort: shrink long string metadata
+                for v in batch:
+                    md = v.get("metadata", {})
+                    for k in list(md.keys()):
+                        if isinstance(md[k], str) and len(md[k]) > 512:
+                            md[k] = md[k][:512]
+                # re-check not strictly necessary; send it
+            self.index.upsert(vectors=batch, namespace=namespace)
+
+    def upsert_texts(self, texts: List[str], metadatas: List[Dict], namespace: str | None = None):
         start_idx = self._load_checkpoint()
-        
         if start_idx > 0:
             logger.info(f"Resuming from checkpoint: {start_idx}/{len(texts)}")
             texts = texts[start_idx:]
             metadatas = metadatas[start_idx:]
-        
-        # Prepare vectors in batches
+
         total_texts = len(texts)
-        for i in tqdm(range(0, total_texts, self.batch_size), desc=f"Upserting to {self.index_name}"):
+        for i in tqdm(range(0, total_texts, self.batch_size), desc=f"Upserting to {self.index_name}:{namespace or 'default'}"):
             batch_texts = texts[i:i + self.batch_size]
             batch_metadatas = metadatas[i:i + self.batch_size]
-            
-            # Generate embeddings for this batch
             embs = self.embedder.embed(batch_texts)
-            
-            # Prepare vectors with trimmed metadata
+
             vectors = []
             for text, metadata, embedding in zip(batch_texts, batch_metadatas, embs):
                 vector_id = metadata.get("id", str(uuid.uuid4()))
                 trimmed_meta = self._trim_metadata(metadata)
-                trimmed_meta["text"] = text[:self.max_metadata_chars]  # Store trimmed text
-                
-                vectors.append({
-                    "id": vector_id,
-                    "values": embedding,
-                    "metadata": trimmed_meta
-                })
-            
-            # Estimate payload size (rough check)
-            payload_size = len(json.dumps(vectors, default=str))
-            if payload_size > 3_500_000:  # 3.5MB safety margin
-                logger.warning(f"Batch size may be too large ({payload_size} bytes), reducing batch size")
-                # Split this batch further if needed
-                mid = len(vectors) // 2
-                for sub_vectors in [vectors[:mid], vectors[mid:]]:
-                    if sub_vectors:
-                        self.index.upsert(vectors=sub_vectors)
-            else:
-                # Safe to upsert
-                self.index.upsert(vectors=vectors)
-            
-            # Save checkpoint
+                trimmed_meta["text"] = text[:self.max_metadata_chars]
+                vectors.append({"id": vector_id, "values": embedding, "metadata": trimmed_meta})
+
+            self._safe_upsert(vectors, namespace)
+
             processed_count = start_idx + i + len(batch_texts)
             self._save_checkpoint(processed_count)
-        
-        # Clear checkpoint on successful completion
-        self._clear_checkpoint()
-        logger.info(f"Successfully upserted {total_texts} texts to {self.index_name}")
 
-    def query(self, query_text: str, top_k: int = 5):
+        self._clear_checkpoint()
+        logger.info(f"Successfully upserted {total_texts} texts to {self.index_name}:{namespace or 'default'}")
+
+    def query(self, query_text: str, top_k: int = 5, namespace: str | None = None):
         q = self.embedder.embed([query_text])[0]
-        res = self.index.query(vector=q, top_k=top_k, include_metadata=True)
+        res = self.index.query(vector=q, top_k=top_k, include_metadata=True, namespace=namespace)
         hits = res.get("matches", [])
         return [h["metadata"]["text"] for h in hits]

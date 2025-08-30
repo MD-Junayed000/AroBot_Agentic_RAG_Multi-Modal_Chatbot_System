@@ -138,8 +138,19 @@ class MCPHandler:
                     f"- Total messages: {summary.get('message_count', 0)}",
                     f"- Prescriptions analyzed: {summary.get('prescription_count', 0)}",
                 ]
+                
                 if summary.get("recent_topics"):
                     parts.append(f"- Recent topics: {', '.join(summary['recent_topics'])}")
+                    
+                # include long-term summary if present
+            try:
+                sess = self.memory.get_session(summary.get("session_id"))
+                lts = (sess or {}).get("long_term_summary", "")
+                if lts:
+                    parts.append("\n**Long-term summary (older turns):**")
+                    parts.append(lts[:2000])  # keep prompt lean
+            except Exception:
+                pass
 
             if rx:
                 parts.append("\n**Recent Prescriptions:**")
@@ -154,6 +165,8 @@ class MCPHandler:
                     parts.append(f"{role}: {content}")
 
             return "\n".join(parts)
+            
+        
         except Exception as e:
             logger.error(f"Format context error: {e}")
             return "Context formatting error"

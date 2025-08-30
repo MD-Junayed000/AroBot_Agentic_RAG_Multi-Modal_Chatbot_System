@@ -1,16 +1,16 @@
 # AroBot – Agentic RAG Multi-Modal Medical Chatbot
 
-An AI assistant for medical Q&A with prescription OCR, PDF RAG, medicine CSV lookup, web search, hybrid conversation memory, and LangSmith tracing. Runs locally via FastAPI + Ollama. Knowledge is stored in Pinecone.
+An advanced AI medical assistant featuring prescription OCR, PDF RAG, medicine database integration, web search capabilities, hybrid conversation memory, and monitoring. Built with **_FastAPI, Ollama, and Pinecone_** for scalable, local deployment.
 
 ## Features
 
 ### Core Capabilities
 
 - **Prescription OCR**: Analyze prescription images using PaddleOCR and computer vision. (PaddleOCR; lazy init; GPU-ready)
-- **Multi-Modal LLM**: Separate models for text and vision processing using Ollama.Text LLM via Ollama (`neural-chat:7b`), vision via `llava:7b`
+- **Multi-Modal LLM**: Separate models for text and vision processing using Ollama.Text LLM via Ollama (`llama3.2:3b`), vision via `llava:7b`
 - **RAG (Retrieval-Augmented Generation)**: Knowledge base search using Pinecone vector database
 - **Medical Knowledge Base**: PDF documents and medicine database integration
-- **Web Search**: DuckDuckGo integration for up-to-date medical information
+- **Web Search**: DuckDuckGo (ddgs) for recent medical info/news with normalised results.
 - **Conversation Memory**: MCP server for maintaining chat history and context.(regex perfect recall + LLM context)
 - **LangSmith Integration**: Monitoring and tracing of LLM interactions
 
@@ -19,48 +19,59 @@ An AI assistant for medical Q&A with prescription OCR, PDF RAG, medicine CSV loo
 1. **Prescription Analysis**: Upload prescription images for automated analysis
 2. **Medicine Search**: Find medications by condition or symptoms
 3. **Medical Q&A**: Ask questions about diseases, treatments, and medications
-4. **Drug Interactions**: Check for potential medication interactions
-5. **Symptom Analysis**: Get information about symptoms and possible conditions
+4. **_Upload PDFs_**: to the knowledge base (namespaces + vector store)
+5. **_Search anatomy figures_**: via CLIP image retrieval.
 
 ## System Architecture
 
 ```
 AroBot_Agentic_RAG_Multi-Modal_Chatbot_System/
-├── 📁 agents/               # AI agents for different tasks
-│   ├── medical_agent.py     # Main orchestrating agent
-│   ├── rag_agent.py         # RAG operations
-│   └── ocr_agent.py         # OCR and image processing
-├── 📁 api/                  # FastAPI web interface
-│   ├── main.py              # FastAPI application
-│   └── routes.py            # API endpoints
-├── 📁 config/               # Configuration
-│   └── env_config.py        # Environment settings
-├── 📁 core/                 # Core components
-│   ├── embeddings.py        # Text embeddings
-│   ├── llm_handler.py       # LLM management
-│   ├── multimodal_processor.py # Multi-modal processing
-│   └── vector_store.py      # Pinecone integration
-├── 📁 data/                 # PDF knowledge base
-│   ├── Human Anatomy.pdf
-│   └── Medical_book.pdf
-├── 📁 mcp_server/          # Memory and context
-│   ├── conversation_memory.py
-│   └── mcp_handler.py
-├── 📁 prescribtion data/   # Sample prescription images (129 images)
-├── 📁 static/              # Static web files
-├── 📁 templates/           # HTML templates
-│   └── chat_enhanced.html  # Web chat interface
-├── 📁 utils/               # Utilities
-│   ├── data_ingestion.py   # Data loading
-│   ├── ocr_pipeline.py     # OCR processing
-│   ├── setup_knowledge_base.py # KB setup
-│   └── web_search.py       # Web search integration
-├── 📁 Web Scrape/          # Medicine database
-│   ├── generic.csv         # Generic medicine data
-│   └── medicine.csv        # Brand medicine data
-├── app.py                  # Main application entry
-├── setup_system.py        # Automated setup script
-└── requirements.txt       # Python dependencies
+├── agents/
+│   ├── medical_agent.py           # Orchestration
+│   ├── rag_agent.py               # RAG ops
+│   └── ocr_agent.py               # OCR/image utilities
+├── api/
+│   ├── main.py                    # FastAPI app (entry or import)
+│   └── routes.py                  # Endpoints (chat, pdf, vector, etc.)
+├── config/
+│   └── env_config.py              # Env and paths
+├── core/
+│   ├── embeddings.py              # Sentence Transformers embedder
+│   ├── llm_handler.py             # Text/vision LLM, OCR-first flows
+│   ├── image_index.py             # CLIP index (anatomy figures)
+│   └── vector_store.py            # Pinecone wrapper (auto-create indexes)
+├── data/
+│   └── pdfs/
+│       ├── WHO Guide to Good Prescribing.pdf
+│       ├── National Guideline on Hypertension Bangladesh.pdf
+│       ├── National Drug Policy, Bangladesh (2016).pdf
+│       ├── Over-the-Counter (OTC) Medicines List (official list).pdf
+│       ├── ...
+│       └── anatomy/
+│           ├── Human Anatomy.pdf
+│           ├── ross-and-wilson-anatomy-and-physiology-in-health-a.pdf
+│           └── color-atlas-of-anatomy-...pdf
+├── mcp_server/
+|   ├── conversation_memory.py
+│   └── mcp_handler.py             # Persistent memory & session store
+├── scripts/
+│   ├── ingest_pdfs_bd.py          # Ingest text PDFs → Pinecone (namespaces)
+│   └── ingest_anatomy_images.py   # Index anatomy figures → CLIP index
+├── static/                        # Assets
+├── templates/
+│   └── chat_enhanced.html         # Web chat UI
+│── prescription_data/   # Sample prescription images (129 images)
+├── utils/
+│   ├── data_ingestion.py
+│   ├── ocr_pipeline.py            # PaddleOCR wrapper + parsing
+│   ├── setup_knowledge_base.py    # Orchestrates both ingest scripts
+│   └── web_search.py              # ddgs + BD medicine resolvers
+├── Web Scrape/
+│   ├── generic.csv
+│   └── medicine.csv
+├── app.py                         # Simple launcher for the API
+└── requirements.txt
+
 ```
 
 ## Setup
@@ -102,7 +113,8 @@ PINECONE_CLOUD=aws
 PINECONE_REGION=us-east-1
 PINECONE_PDF_INDEX=arobot-medical-pdfs
 PINECONE_MEDICINE_INDEX=arobot-medicine-data
-
+PINECONE_BD_PHARMACY_INDEX= arobot-bd-pharmacy
+PINECONE_IMAGE_INDEX= arobot-anatomy-images
 
 # LangSmith Configuration
 LANGCHAIN_TRACING_V2=true
@@ -113,6 +125,12 @@ LANGCHAIN_PROJECT=arobot-multimodal-chatbot-system
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_TEXT_MODEL=llama3.2:3b
 OLLAMA_VISION_MODEL=llava:7b
+# Faster formatter model (optional if you have it pulled)
+OLLAMA_FAST_TEXT_MODEL=llama3.2:1b
+
+# Regional defaults (used by medicine)
+DEFAULT_REGION =BD
+
 
 # OCR Configuration
 OCR_LANGUAGE=en
@@ -133,53 +151,110 @@ Setup knowledge base
 python -m utils.setup_knowledge_base
 ```
 
+This will:
+
+> > ingest text PDFs into the BD Pinecone index (with namespaces)
+
+> > index anatomy figures into the CLIP image index
+
 Start the system
 
 ```bash
 python app.py
-# Chat UI:  http://localhost:8000/chat
-# Docs:     http://localhost:8000/docs
-# Health:   http://localhost:8000/health
 ```
 
-## Key endpoints
+##### Access Points
 
-- POST `/api/v1/chat`
+- **🌐 Main Interface**: http://localhost:8000
+- **💬 Chat UI**: http://localhost:8000/chat
+- **📖 API Docs**: http://localhost:8000/docs
+- **🔍 Health Check**: http://localhost:8000/health
 
-  - JSON: `{ "message": str, "session_id": str|null, "use_web_search": bool|null }`
-  - Hybrid memory first (name/department/hospital), else RAG + LLM
+## APIendpoints
 
-- POST `/api/v1/prescription/upload`
+### Core Chat Endpoint
 
-  - multipart/form-data: `file`, `image_type` (prescription|general), optional `query`, `session_id`
-  - Default image description when no prompt
+```http
+POST /chat
+Content-Type: application/json
 
-- POST `/api/v1/pdf/analyze`
+{
+  "message": "What is paracetamol used for?",
+  "session_id": "user_session_123",
+  "use_web_search": true
+}
+```
 
-  - Describe or QA a PDF without writing to vectors
+### Prescription Analysis (Image)
 
-- POST `/api/v1/pdf/upload`
+```http
+POST /prescription/upload
+Content-Type: multipart/form-data
 
-  - Ingest PDF into default PDF store
+file: [image.jpg|png]
+image_type: "prescription" | "general"
+query: "What meds are prescribed?"
+session_id: "user_session_123"
+```
 
-- POST `/api/v1/vector/create-index`
+> > > Compatibility alias: POST /image/analyze (same params; image_type="general").
 
-  - Create new Pinecone index from uploaded PDF; name auto-formatted
+### Prescription (text query)
 
-- GET `/api/v1/vector/indexes`
-  - List Pinecone indexes with stats
+```http
+POST /prescription/analyze
+Content-Type: application/json
 
-## How it works (short)
+{
+  "query": "Patient takes metformin and glimepiride—any duplications?",
+  "session_id": "user_session_123"
+}
+```
 
-- `medical_agent.py` routes queries to RAG, OCR, image analysis, or web search; adds conversation context.
-- `rag_agent.py` retrieves from Pinecone and calls `llm_handler`.
-- `llm_handler.py` builds prompts (with conversation history) and calls Ollama.
-- `ocr_pipeline.py` runs PaddleOCR with tuned defaults.
-- `api/routes.py` includes PerfectMemoryProcessor for instant recall of name/department/hospital.
+### PDF Processing
+
+```http
+POST /api/v1/pdf/analyze
+Content-Type: multipart/form-data
+
+file: [medical_document.pdf]
+query: "Summarize the key points"  # Optional
+session_id: "user_session_123"
+```
+
+### Vector Database Management
+
+```http
+POST /vector/create-index
+# Creates a brand-new Pinecone index from a single PDF
+# (auto-formats index name, uses dimension=384)
+```
+
+```http
+GET /api/v1/vector/indexes
+```
+
+### Weather Information
+
+```http
+GET /api/v1/weather?location=New%20York
+```
+
+## How it works
+
+- **1. Request Routing**: `agents/medical_agent.py` chooses OCR, RAG, web, image, or direct memory paths and augments with conversation context.
+- **2. RAG Processing**: `agents/rag_agent.py` queries Pinecone (BD namespaces first) and builds compact context.
+- **3. LLM Integration**: `core/llm_handler.py` formats prompts (defaults to careful clinical style), calls Ollama text/vision models.
+- **4. Multi-Modal Processing**: `- OCR pipeline using PaddleOCR with GPU acceleration
+- Vision analysis with LLaVA model
+- PDF text extraction and processing
+- **4. Memory Management**`mcp_server/mcp_handler.py` maintains conversation context across sessions
+- PerfectMemoryProcessor provides instant recall for personal information
+- Hybrid approach combines rule-based extraction with LLM context
 
 ## Troubleshooting
 
-- Ollama errors: ensure Ollama is running; `ollama list`; pull the models above.
+- Ollama errors: ensure `OLLAMA_BASE_URL` is reachable; `ollama list` pull the models above.
 - Pinecone name error: avoid spaces/underscores; server auto-formats names.
 - Slow OCR: prefer GPU and clear scans.
 - Memory recall: ensure same `session_id`; UI stores sessions.
@@ -193,4 +268,4 @@ python app.py
 
 ## License & Disclaimer
 
-For education/research. Not medical advice.
+For education/research. Not medical advice. Always consult a clinician for diagnosis or treatment.

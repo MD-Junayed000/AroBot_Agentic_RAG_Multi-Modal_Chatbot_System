@@ -6,6 +6,7 @@ from typing import List, Dict, Any, Optional, Union
 from PIL import Image
 import numpy as np
 from sentence_transformers import SentenceTransformer
+import tempfile
 import torch
 try:
     import clip
@@ -33,6 +34,17 @@ class MultiModalProcessor:
         self.ocr_pipeline = OCRPipeline(lang=OCR_LANGUAGE)
         # CLIP setup unchanged...
         self.text_embedder = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+        
+        self.clip_available = False
+        if CLIP_AVAILABLE:
+            try:
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+                self.clip_model, self.clip_preprocess = clip.load("ViT-B/32", device=device)
+                self.clip_model.eval()
+
+                self.clip_available = True
+            except Exception:
+                self.clip_available = False
 
     def process_image(self, image_input: Union[str, bytes, Image.Image]) -> Dict[str, Any]:
         try:
@@ -57,9 +69,9 @@ class MultiModalProcessor:
             if image_path:
                 lines, items = self.ocr_pipeline.run_on_image(image_path)
             else:
-                tmp = "temp_image_for_ocr.jpg"
-                image.save(tmp, format="JPEG")
-                lines, items = self.ocr_pipeline.run_on_image(tmp)
+                with tempfile.NamedTemporaryFile(suffix=".jpg", delete=True) as tf:
+                    image.save(tf.name, format="JPEG", quality=85, optimize=True)
+                    lines, items = self.ocr_pipeline.run_on_image(tf.name)
 
             raw_text = "\n".join(lines)
             # defend against weird shapes

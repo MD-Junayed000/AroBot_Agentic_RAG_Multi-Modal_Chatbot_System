@@ -20,6 +20,7 @@ class ConversationMemory:
         self.memory_dir.mkdir(exist_ok=True)
         self.active_sessions: Dict[str, Dict[str, Any]] = {}
         self.max_memory_days = 30
+        self.summary_chunk = 120  # how many old turns to summarize at once
 
     # --------- session primitives --------- #
     def create_session(self, user_id: Optional[str] = None) -> str:
@@ -34,6 +35,8 @@ class ConversationMemory:
             "context": {},
             "prescription_history": [],
             "medical_queries": [],
+            "long_term_summary": "",
+
         }
         self.active_sessions[session_id] = data
         self._save_session(session_id)
@@ -46,36 +49,51 @@ class ConversationMemory:
 
     # --------- message storage --------- #
     def add_message(
-        self,
-        session_id: str,
-        role: str,
-        content: str,
-        message_type: str = "text",
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> bool:
-        try:
-            session = self.get_session(session_id)
-            if not session:
-                logger.warning(f"Session {session_id} not found")
-                return False
-            msg = {
-                "id": str(uuid.uuid4()),
-                "timestamp": datetime.now().isoformat(),
-                "role": role,
-                "content": content,
-                "type": message_type,
-                "metadata": metadata or {},
-            }
-            session["messages"].append(msg)
-            session["last_activity"] = datetime.now().isoformat()
-            # bound memory
-            if len(session["messages"]) > 60:
-                session["messages"] = session["messages"][-60:]
-            self._save_session(session_id)
-            return True
-        except Exception as e:
-            logger.error(f"Error adding message: {e}")
-            return False
+         self,
+         session_id: str,
+         role: str,
+         content: str,
+         message_type: str = "text",
+         metadata: Optional[Dict[str, Any]] = None,
+     ) -> bool:
+         try:
+             session = self.get_session(session_id)
+             if not session:
+                 logger.warning(f"Session {session_id} not found")
+                 return False
+             msg = {
+                 "id": str(uuid.uuid4()),
+                 "timestamp": datetime.now().isoformat(),
+                 "role": role,
+                 "content": content,
+                 "type": message_type,
+                 "metadata": metadata or {},
+             }
+             session["messages"].append(msg)
+             session["last_activity"] = datetime.now().isoformat()
+             # bound memory: compact older messages into a long-term summary instead of dropping
+             if len(session["messages"]) > 120:
+                 old = session["messages"][:-80]
+                 keep = session["messages"][-80:]
+                 # simple deterministic compact without LLM
+                 summary_lines = []
+                 for m in old:
+                     role = m.get("role", "user")
+                     text = (m.get("content") or "").strip().replace("\n", " ")
+                     if text:
+                         summary_lines.append(f"{role}: {text}")
+                 prefix = (session.get("long_term_summary") or "").strip()
+                 new_sum = ("; ".join(summary_lines))[:12000]
+                 session["long_term_summary"] = ((prefix + " ; " if prefix else "") + new_sum)[:30000]
+                 session["messages"] = keep
+
+             # persist every write
+             self._save_session(session_id)
+             return True
+         except Exception as e:
+             logger.error(f"Error adding message: {e}")
+             return False
+
 
     def get_conversation_history(self, session_id: str, limit: int = 20) -> List[Dict[str, Any]]:
         try:

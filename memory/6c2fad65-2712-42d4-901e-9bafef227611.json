@@ -1,0 +1,68 @@
+{
+  "session_id": "6c2fad65-2712-42d4-901e-9bafef227611",
+  "user_id": "chat_h4vhm6q_1756584037980",
+  "created_at": "2025-08-31T02:00:38.256963",
+  "last_activity": "2025-08-31T02:04:50.251756",
+  "messages": [
+    {
+      "id": "29c50ce8-8a58-4cd9-8481-cbff836bf4d0",
+      "timestamp": "2025-08-31T02:00:38.258965",
+      "role": "system",
+      "content": "AroBot session initialized. I'm ready to help with your medical questions.",
+      "type": "system",
+      "metadata": {}
+    },
+    {
+      "id": "e977010a-0c39-49c1-94ea-d60e60d39534",
+      "timestamp": "2025-08-31T02:01:09.546829",
+      "role": "user",
+      "content": "tell me about Napa medicine?",
+      "type": "text",
+      "metadata": {}
+    },
+    {
+      "id": "974924d0-41db-4113-bba8-335ddc915079",
+      "timestamp": "2025-08-31T02:02:35.207910",
+      "role": "assistant",
+      "content": "I think there's been a mix-up! The information provided earlier was about \"Napa Integrated Medicine\" in California, USA, which doesn't seem to be relevant to Bangladesh.\n\nHowever, I found that \"Napa\" is also the brand name for paracetamol (acetaminophen) in some countries, including Bangladesh. Napa 500 mg tablet is an analgesic and antipyretic medication containing paracetamol, indicated for fever, headaches, toothaches, and other pains.\n\nIf you're looking for information on medications recommended for hypertension and diabetes mellitus management in Bangladesh, I'd be happy to provide more general guidance. However, please consult a clinician or a healthcare professional for personalized advice on treatment options, as they can consider your specific condition, medical history, and other factors when making recommendations.\n\nWould you like me to provide more information on medications commonly used for hypertension and diabetes management in Bangladesh?",
+      "type": "text",
+      "metadata": {}
+    },
+    {
+      "id": "25366f85-0f95-476f-9828-0a180ca33b1b",
+      "timestamp": "2025-08-31T02:02:35.209909",
+      "role": "user",
+      "content": "tell me about Napa medicine?",
+      "type": "query",
+      "metadata": {}
+    },
+    {
+      "id": "b430d43b-c7d4-49f6-840a-3db5053238f6",
+      "timestamp": "2025-08-31T02:02:35.210908",
+      "role": "assistant",
+      "content": "I think there's been a mix-up! The information provided earlier was about \"Napa Integrated Medicine\" in California, USA, which doesn't seem to be relevant to Bangladesh.\n\nHowever, I found that \"Napa\" is also the brand name for paracetamol (acetaminophen) in some countries, including Bangladesh. Napa 500 mg tablet is an analgesic and antipyretic medication containing paracetamol, indicated for fever, headaches, toothaches, and other pains.\n\nIf you're looking for information on medications recommended for hypertension and diabetes mellitus management in Bangladesh, I'd be happy to provide more general guidance. However, please consult a clinician or a healthcare professional for personalized advice on treatment options, as they can consider your specific condition, medical history, and other factors when making recommendations.\n\nWould you like me to provide more information on medications commonly used for hypertension and diabetes management in Bangladesh?",
+      "type": "response",
+      "metadata": {}
+    },
+    {
+      "id": "4bff05de-7e1e-4c1d-96fb-8a639cda8501",
+      "timestamp": "2025-08-31T02:04:50.251756",
+      "role": "user",
+      "content": "what is the price of it?",
+      "type": "text",
+      "metadata": {}
+    }
+  ],
+  "context": {},
+  "prescription_history": [],
+  "medical_queries": [
+    {
+      "id": "4640a8d6-371d-4a5c-aee6-995333ed21c7",
+      "timestamp": "2025-08-31T02:02:35.208909",
+      "query": "tell me about Napa medicine?",
+      "response": "I think there's been a mix-up! The information provided earlier was about \"Napa Integrated Medicine\" in California, USA, which doesn't seem to be relevant to Bangladesh.\n\nHowever, I found that \"Napa\" is also the brand name for paracetamol (acetaminophen) in some countries, including Bangladesh. Napa 500 mg tablet is an analgesic and antipyretic medication containing paracetamol, indicated for fever, headaches, toothaches, and other pains.\n\nIf you're looking for information on medications recommended for hypertension and diabetes mellitus management in Bangladesh, I'd be happy to provide more general guidance. However, please consult a clinician or a healthcare professional for personalized advice on treatment options, as they can consider your specific condition, medical history, and other factors when making recommendations.\n\nWould you like me to provide more information on medications commonly used for hypertension and diabetes management in Bangladesh?",
+      "type": "general"
+    }
+  ],
+  "long_term_summary": ""
+}

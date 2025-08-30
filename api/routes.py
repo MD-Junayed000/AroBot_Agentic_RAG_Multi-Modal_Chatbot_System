@@ -16,6 +16,8 @@ from pydantic import BaseModel
 from config.env_config import TEMPLATES_DIR, PINECONE_API_KEY
 from mcp_server.mcp_handler import MCPHandler
 
+
+
 logger = logging.getLogger(__name__)
 
 # --------------------------------------------------------------------------------------
@@ -157,37 +159,64 @@ def _write_temp_bytes(data: bytes, name: str) -> Path:
 
 
 # --------------------------------------------------------------------------------------
+# Intents
+# --------------------------------------------------------------------------------------
+def _looks_like_weather(q: str) -> bool:
+    ql = q.lower()
+    return any(k in ql for k in ["weather", "forecast", "temperature", "rain", "snow", "wind"]) and "whether" not in ql
+
+def _looks_like_price(q: str) -> bool:
+    ql = q.lower()
+    return any(k in ql for k in ["price", "cost", "tk", "bdt", "how much", "mrp"])
+
+def _looks_like_ocr_followup(q: str) -> bool:
+    ql = q.lower()
+    return any(k in ql for k in ["name", "doctor", "patient", "phone", "date", "clinic", "written", "what is the name"])
+
+
+# --------------------------------------------------------------------------------------
 # Weather helpers (Open-Meteo)
 # --------------------------------------------------------------------------------------
 def _get_weather_text(lat: float, lon: float) -> str:
-    """Return a short one-line weather text. Uses openmeteo_requests if installed, else plain requests."""
+    """
+    Return a short human-readable weather line using Open-Meteo.
+    Falls back gracefully if current_weather is unavailable.
+    """
+    WMO = {
+        0: "clear sky", 1: "mainly clear", 2: "partly cloudy", 3: "overcast",
+        45: "fog", 48: "depositing rime fog", 51: "light drizzle", 53: "drizzle",
+        55: "heavy drizzle", 56: "freezing drizzle", 57: "freezing drizzle",
+        61: "light rain", 63: "rain", 65: "heavy rain",
+        66: "freezing rain", 67: "freezing rain",
+        71: "light snow", 73: "snow", 75: "heavy snow",
+        77: "snow grains", 80: "light showers", 81: "showers", 82: "heavy showers",
+        85: "snow showers", 86: "heavy snow showers",
+        95: "thunderstorm", 96: "thunderstorm w/ hail", 99: "violent thunderstorm w/ hail"
+    }
+    import requests
     try:
-        import openmeteo_requests  # type: ignore
-        import requests_cache  # type: ignore
-        from retry_requests import retry  # type: ignore
-
-        cache_session = requests_cache.CachedSession(".cache", expire_after=3600)
-        retry_session = retry(cache_session, retries=5, backoff_factor=0.2)
-        client = openmeteo_requests.Client(session=retry_session)
         url = "https://api.open-meteo.com/v1/forecast"
-        params = {"latitude": lat, "longitude": lon, "hourly": "temperature_2m"}
-        responses = client.weather_api(url, params=params)
-        r = responses[0]
-        hourly = r.Hourly()
-        temp_c = float(hourly.Variables(0).ValuesAsNumpy()[0])
-        return f"Current model temperature near {lat:.4f},{lon:.4f}: {temp_c:.1f}°C"
+        params = {
+            "latitude": lat, "longitude": lon,
+            "current_weather": True,
+            "hourly": "temperature_2m,cloudcover"
+        }
+        r = requests.get(url, params=params, timeout=10)
+        j = r.json()
+        cur = j.get("current_weather", {})
+        t = float(cur.get("temperature"))
+        code = int(cur.get("weathercode", 0))
+        desc = WMO.get(code, "unknown")
+        # quick feels-like label
+        if   t <= 5:    feel = "very cold 🥶"
+        elif t <= 12:   feel = "chilly 🧥"
+        elif t <= 18:   feel = "cool 🌤️"
+        elif t <= 27:   feel = "warm 🙂"
+        elif t <= 33:   feel = "hot 🔥"
+        else:           feel = "very hot 🥵"
+        return f"{desc}, {feel} — {t:.0f}°C near {lat:.4f},{lon:.4f}"
     except Exception:
-        # Lightweight fallback
-        import requests
-
-        url = "https://api.open-meteo.com/v1/forecast"
-        resp = requests.get(url, params={"latitude": lat, "longitude": lon, "hourly": "temperature_2m"}, timeout=10)
-        j = resp.json()
-        try:
-            temp_c = float(j["hourly"]["temperature_2m"][0])
-            return f"Current model temperature near {lat:.4f},{lon:.4f}: {temp_c:.1f}°C"
-        except Exception:
-            return "Weather service is temporarily unavailable."
+        return "Weather service is temporarily unavailable."
 
 
 # --------------------------------------------------------------------------------------
@@ -253,12 +282,12 @@ async def chat_with_bot(payload: ChatMessage):
         get_mcp().add_user_message(session_id, payload.message)
         add_to_conversation_memory(session_id, "User", payload.message)
 
-        # quick weather hook (simple trigger)
         lower_msg = payload.message.lower()
-        if "weather" in lower_msg:
-            # try to grab "lat,lon" from text; else use a sensible default (NYC)
+
+        # quick weather hook
+        if _looks_like_weather(lower_msg):
             m = re.search(r"(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)", payload.message)
-            lat, lon = (40.73061, -73.935242)
+            lat, lon = (40.73061, -73.935242)  # default if none in message
             if m:
                 try:
                     lat, lon = float(m.group(1)), float(m.group(2))
@@ -275,31 +304,45 @@ async def chat_with_bot(payload: ChatMessage):
         if mem:
             add_to_conversation_memory(session_id, "Assistant", mem)
             get_mcp().add_assistant_response(session_id, mem)
-            return {
-                "response": mem,
-                "session_id": session_id,
-                "sources": {"memory": "pattern"},
-                "status": "success",
-            }
+            return {"response": mem, "session_id": session_id, "sources": {"memory": "pattern"}, "status": "success"}
 
-        # augment context with last uploaded PDF / Image OCR if the user refers to "this pdf/image"
-        extra_blocks: List[str] = []
+        # read last OCR/PDF context for follow-ups
         try:
             sess_ctx = get_mcp().memory.active_sessions.get(session_id, {}).get("context", {})
-            if ("this pdf" in lower_msg or "the pdf" in lower_msg or "that pdf" in lower_msg or "pdf" in lower_msg) and sess_ctx.get(
-                "last_pdf"
-            ):
-                extra_blocks.append(f"ATTACHED_PDF_TEXT:\n{sess_ctx['last_pdf']}")
-            if ("this image" in lower_msg or "the image" in lower_msg or "that image" in lower_msg or "image" in lower_msg) and sess_ctx.get(
-                "last_image_ocr"
-            ):
-                extra_blocks.append(f"ATTACHED_IMAGE_OCR:\n{sess_ctx['last_image_ocr']}")
         except Exception:
-            pass
+            sess_ctx = {}
 
-        augmented_context = transcript + ("\n\n" + "\n\n".join(extra_blocks) if extra_blocks else "")
+        # direct OCR follow-ups (names/phone/date/clinic etc.) BEFORE heavy RAG
+        if sess_ctx.get("last_image_ocr") and _looks_like_ocr_followup(lower_msg):
+            ans = get_medical_agent().llm.answer_over_ocr_text(payload.message, sess_ctx["last_image_ocr"])
+            add_to_conversation_memory(session_id, "Assistant", ans)
+            get_mcp().add_assistant_response(session_id, ans)
+            return {"response": ans, "session_id": session_id, "sources": {"ocr": "last_image"}, "status": "success"}
+
+        # direct PDF follow-up (“this pdf”, “the pdf”, etc.) BEFORE heavy RAG
+        if sess_ctx.get("last_pdf") and any(k in lower_msg for k in ["this pdf", "the pdf", "that pdf", "pdf document"]):
+            ans = get_medical_agent().llm.answer_over_pdf_text(payload.message, sess_ctx["last_pdf"], conversation_context=transcript)
+            add_to_conversation_memory(session_id, "Assistant", ans)
+            get_mcp().add_assistant_response(session_id, ans)
+            return {"response": ans, "session_id": session_id, "sources": {"pdf": "last_pdf"}, "status": "success"}
+
+        # medicine price intent (“price of Napa”, “Napa price”, etc.)
+        if _looks_like_price(lower_msg):
+            text = get_medical_agent().llm.answer_medicine(payload.message, want_price=True)
+            add_to_conversation_memory(session_id, "Assistant", text)
+            get_mcp().add_assistant_response(session_id, text)
+            get_mcp().record_medical_query(session_id, payload.message, text, "medicine_price")
+            return {"response": text, "session_id": session_id, "sources": {"resolver": "pharma"}, "status": "success"}
 
         # full LLM handling (RAG + conversation context)
+        # Augment context with last uploaded PDF/Image OCR breadcrumbs for the model
+        extra_blocks: List[str] = []
+        if sess_ctx.get("last_pdf") and "pdf" in lower_msg:
+            extra_blocks.append(f"ATTACHED_PDF_TEXT:\n{sess_ctx['last_pdf']}")
+        if sess_ctx.get("last_image_ocr") and "image" in lower_msg:
+            extra_blocks.append(f"ATTACHED_IMAGE_OCR:\n{sess_ctx['last_image_ocr']}")
+        augmented_context = transcript + ("\n\n" + "\n\n".join(extra_blocks) if extra_blocks else "")
+
         resp = get_medical_agent().handle_text_query(
             payload.message,
             session_id=session_id,
@@ -312,12 +355,7 @@ async def chat_with_bot(payload: ChatMessage):
             add_to_conversation_memory(session_id, "Assistant", text)
             get_mcp().add_assistant_response(session_id, text)
             get_mcp().record_medical_query(session_id, payload.message, text)
-            return {
-                "response": text,
-                "session_id": session_id,
-                "sources": resp.get("sources", {}),
-                "status": "success",
-            }
+            return {"response": text, "session_id": session_id, "sources": resp.get("sources", {}), "status": "success"}
 
         err = f"Error: {resp.get('error', 'Unknown error')}"
         get_mcp().add_assistant_response(session_id, err)
@@ -491,6 +529,8 @@ async def upload_pdf(
     file: UploadFile = File(...),
     description: Optional[str] = Form(None),
     session_id: Optional[str] = Form(None),
+    namespace: Optional[str] = Form(None),        # 👈 NEW
+    index_name: Optional[str] = Form(None),       # 👈 NEW
 ):
     if file.content_type != "application/pdf":
         raise HTTPException(status_code=400, detail="File must be a PDF")
@@ -508,10 +548,12 @@ async def upload_pdf(
         from core.vector_store import PineconeStore
         from config.env_config import PINECONE_PDF_INDEX
 
+        target_index = index_name or PINECONE_PDF_INDEX
+
         loader = PyPDFLoader(str(tmp))
         documents = loader.load()
 
-        splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+        splitter = RecursiveCharacterTextSplitter(chunk_size=700, chunk_overlap=120)
         chunks = splitter.split_documents(documents)
 
         texts, metas = [], []
@@ -527,12 +569,12 @@ async def upload_pdf(
                 }
             )
 
-        store = PineconeStore(index_name=PINECONE_PDF_INDEX, dimension=384)
-        store.upsert_texts(texts, metas)
+        store = PineconeStore(index_name=target_index, dimension=384)
+        store.upsert_texts(texts, metas, namespace=namespace)
 
         msg = (
-            f"Successfully processed '{file.filename}' and added "
-            f"{len(texts)} chunks to the medical knowledge base."
+            f"Successfully processed '{file.filename}' into index '{target_index}'"
+            f"{f' namespace {namespace!r}' if namespace else ''} with {len(texts)} chunks."
         )
 
         get_mcp().add_user_message(
@@ -547,6 +589,7 @@ async def upload_pdf(
             tmp.unlink(missing_ok=True)
         except Exception:
             pass
+
 
 
 # --------------------------------------------------------------------------------------
@@ -673,11 +716,12 @@ async def search_medicine_by_condition(req: MedicineSearch):
 @router.get("/weather")
 async def weather(lat: float, lon: float):
     try:
+        summary = _get_weather_text(lat, lon)
+        # keep a rich payload but include human summary
         try:
             import openmeteo_requests  # type: ignore
             import requests_cache  # type: ignore
             from retry_requests import retry  # type: ignore
-
             cache_session = requests_cache.CachedSession(".cache", expire_after=3600)
             retry_session = retry(cache_session, retries=5, backoff_factor=0.2)
             client = openmeteo_requests.Client(session=retry_session)
@@ -688,6 +732,7 @@ async def weather(lat: float, lon: float):
             hourly = r.Hourly()
             temps = list(hourly.Variables(0).ValuesAsNumpy())
             return {
+                "summary": summary,
                 "coords": [r.Latitude(), r.Longitude()],
                 "elevation": r.Elevation(),
                 "utc_offset_seconds": r.UtcOffsetSeconds(),
@@ -695,14 +740,12 @@ async def weather(lat: float, lon: float):
                 "status": "success",
             }
         except Exception:
-            # Fallback plain HTTP (no cache/retry libs required)
             import requests
-
             url = "https://api.open-meteo.com/v1/forecast"
             resp = requests.get(url, params={"latitude": lat, "longitude": lon, "hourly": "temperature_2m"}, timeout=10)
             resp.raise_for_status()
             data = resp.json()
-            return {"raw": data, "status": "success"}
+            return {"summary": summary, "raw": data, "status": "success"}
     except Exception as e:
         return {"error": str(e), "status": "error"}
 
@@ -718,3 +761,14 @@ async def get_system_status():
 @router.get("/knowledge/stats")
 async def get_knowledge_base_stats():
     return get_medical_agent().rag_agent.get_knowledge_base_stats()
+# --------------------------------------------------------------------------------------
+# TESt CLIP
+# --------------------------------------------------------------------------------------
+@router.post("/image/search")
+async def image_search(file: UploadFile = File(...), top_k: int = 6):
+    from core.image_index import CLIPImageIndex
+    idx = CLIPImageIndex()
+    pil = Image.open(io.BytesIO(await file.read())).convert("RGB")
+    res = idx.query_by_image(pil, top_k=top_k, namespace="anatomy")
+    return {"matches": res.get("matches", [])}
+

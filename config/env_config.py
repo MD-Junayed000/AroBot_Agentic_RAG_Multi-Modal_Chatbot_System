@@ -5,66 +5,64 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
-load_dotenv()
+load_dotenv()  # load .env early
 
+def _get(name: str, default=None, *, strip: bool = True):
+    v = os.getenv(name, default)
+    if strip and isinstance(v, str):
+        v = v.strip()
+    return v
 
-# API Keys - Load from environment variables
-PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
-LANGSMITH_API_KEY = os.getenv("LANGSMITH_API_KEY")
+def _get_bool(name: str, default: str = "false") -> bool:
+    return _get(name, default).lower() in {"1", "true", "yes", "on"}
 
-# Validate API keys
-if not PINECONE_API_KEY or PINECONE_API_KEY == "your_pinecone_api_key_here":
-    print("⚠️  Warning: PINECONE_API_KEY not set in .env file")
-    
-if not LANGSMITH_API_KEY or LANGSMITH_API_KEY == "your_langsmith_api_key_here":
-    print("⚠️  Warning: LANGSMITH_API_KEY not set in .env file")
+# ---------- API Keys ----------
+PINECONE_API_KEY = _get("PINECONE_API_KEY")
+LANGSMITH_API_KEY = _get("LANGSMITH_API_KEY")
 
-# Pinecone Configuration
-PINECONE_CLOUD = os.getenv("PINECONE_CLOUD")
-PINECONE_REGION = os.getenv("PINECONE_REGION")
-PINECONE_PDF_INDEX = os.getenv("PINECONE_PDF_INDEX")
-PINECONE_MEDICINE_INDEX = os.getenv("PINECONE_MEDICINE_INDEX")
-EMBEDDING_DIMENSION = int(os.getenv("EMBEDDING_DIMENSION", "384"))
+if not PINECONE_API_KEY:
+    print("⚠️  Warning: PINECONE_API_KEY not set in .env")
+if not LANGSMITH_API_KEY:
+    print("⚠️  Warning: LANGSMITH_API_KEY not set in .env")
 
-# LangSmith Configuration
-LANGCHAIN_TRACING_V2 = True
-LANGCHAIN_ENDPOINT = "https://api.smith.langchain.com"
-LANGCHAIN_PROJECT = os.getenv("LANGCHAIN_PROJECT")
+# ---------- Pinecone ----------
+PINECONE_CLOUD = _get("PINECONE_CLOUD", "aws")
+PINECONE_REGION = _get("PINECONE_REGION", "us-east-1")
+PINECONE_PDF_INDEX = _get("PINECONE_PDF_INDEX")
+PINECONE_MEDICINE_INDEX = _get("PINECONE_MEDICINE_INDEX")
+PINECONE_BD_PHARMACY_INDEX = _get("PINECONE_BD_PHARMACY_INDEX")
+PINECONE_IMAGE_INDEX = _get("PINECONE_IMAGE_INDEX")
+EMBEDDING_DIMENSION = int(_get("EMBEDDING_DIMENSION", "384"))
 
-# Ollama Configuration
-OLLAMA_BASE_URL = "http://localhost:11434"
-OLLAMA_TEXT_MODEL = os.getenv("OLLAMA_TEXT_MODEL")
-OLLAMA_VISION_MODEL= os.getenv("OLLAMA_VISION_MODEL")
+# ---------- LangSmith ----------
+LANGCHAIN_TRACING_V2 = _get_bool("LANGCHAIN_TRACING_V2")
+LANGCHAIN_ENDPOINT = _get("LANGCHAIN_ENDPOINT")
+LANGCHAIN_PROJECT = _get("LANGCHAIN_PROJECT")
 
-# OCR Configuration
-OCR_LANGUAGE = os.getenv("OCR_LANGUAGE")
-OCR_CONFIDENCE_THRESHOLD = float(os.getenv("OCR_CONFIDENCE_THRESHOLD"))
+# ---------- Ollama ----------
+OLLAMA_BASE_URL = _get("OLLAMA_BASE_URL")
+OLLAMA_TEXT_MODEL = _get("OLLAMA_TEXT_MODEL")
+OLLAMA_VISION_MODEL = _get("OLLAMA_VISION_MODEL")
+OLLAMA_FAST_TEXT_MODEL = _get("OLLAMA_FAST_TEXT_MODEL")
 
-# Application Configuration
-APP_HOST = os.getenv("APP_HOST")
-APP_PORT = int(os.getenv("APP_PORT"))
-DEBUG = os.getenv("DEBUG", "true").lower() == "true"
+# ---------- Region ----------
+DEFAULT_REGION = _get("DEFAULT_REGION")
 
-# Data Paths
+# ---------- OCR ----------
+OCR_LANGUAGE = _get("OCR_LANGUAGE")
+OCR_CONFIDENCE_THRESHOLD = float(_get("OCR_CONFIDENCE_THRESHOLD"))
+
+# ---------- App ----------
+APP_HOST = _get("APP_HOST")
+APP_PORT = int(_get("APP_PORT"))
+DEBUG = _get_bool("DEBUG")
+
+# ---------- Data paths ----------
 DATA_DIR = Path("data")
-PRESCRIPTION_DIR = Path("prescribtion data")
+PRESCRIPTION_DIR = Path("prescription_data")   # fixed typo
 WEB_SCRAPE_DIR = Path("Web Scrape")
 STATIC_DIR = Path("static")
 TEMPLATES_DIR = Path("templates")
 
-# Ensure directories exist
-for dir_path in [DATA_DIR, PRESCRIPTION_DIR, WEB_SCRAPE_DIR, STATIC_DIR, TEMPLATES_DIR]:
-    dir_path.mkdir(exist_ok=True)
-    
-    
-
-
-
-
-
-
-
-
-
-
+for p in [DATA_DIR, PRESCRIPTION_DIR, WEB_SCRAPE_DIR, STATIC_DIR, TEMPLATES_DIR]:
+    p.mkdir(parents=True, exist_ok=True)
