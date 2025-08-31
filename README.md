@@ -27,41 +27,64 @@ An advanced AI medical assistant featuring prescription OCR, PDF RAG, medicine d
 ```
 AroBot_Agentic_RAG_Multi-Modal_Chatbot_System/
 ├── agents/
+│   ├── __init__.py
 │   ├── medical_agent.py           # Orchestration
 │   ├── rag_agent.py               # RAG ops
 │   └── ocr_agent.py               # OCR/image utilities
 ├── api/
+│   ├── __init__.py
 │   ├── main.py                    # FastAPI app (entry or import)
 │   └── routes.py                  # Endpoints (chat, pdf, vector, etc.)
 ├── config/
+│   ├── __init__.py
 │   └── env_config.py              # Env and paths
 ├── core/
+│   ├── __init__.py
 │   ├── embeddings.py              # Sentence Transformers embedder
 │   ├── llm_handler.py             # Text/vision LLM, OCR-first flows
 │   ├── image_index.py             # CLIP index (anatomy figures)
 │   └── vector_store.py            # Pinecone wrapper (auto-create indexes)
+│   ├── multimodal_processor.py
 ├── data/
 │   └── pdfs/
 │       ├── WHO Guide to Good Prescribing.pdf
 │       ├── National Guideline on Hypertension Bangladesh.pdf
 │       ├── National Drug Policy, Bangladesh (2016).pdf
 │       ├── Over-the-Counter (OTC) Medicines List (official list).pdf
-│       ├── ...
+|       ├── WHO Model List of Essential Medicines for Children (9th, 2023).pdf
+|       ├── National Protocol for Management of.pdf
+|       ├── Drugs & Cosmetics Law.pdf
+|       ├── A_Study_on_the_National_Drug_Policies_of_Banglades.pdf
 │       └── anatomy/
 │           ├── Human Anatomy.pdf
 │           ├── ross-and-wilson-anatomy-and-physiology-in-health-a.pdf
 │           └── color-atlas-of-anatomy-...pdf
 ├── mcp_server/
+│   ├── __init__.py
 |   ├── conversation_memory.py
 │   └── mcp_handler.py             # Persistent memory & session store
 ├── scripts/
+│   ├── __init__.py
 │   ├── ingest_pdfs_bd.py          # Ingest text PDFs → Pinecone (namespaces)
 │   └── ingest_anatomy_images.py   # Index anatomy figures → CLIP index
-├── static/                        # Assets
+│   ├── refresh_pharma_cache.py
+├
+├── pharma/
+│   ├── __init__.py
+│   ├── resolver.py
+│   ├── provider/
+│       ├── __init__.py
+├        ├── medex.py
+├
 ├── templates/
 │   └── chat_enhanced.html         # Web chat UI
 │── prescription_data/   # Sample prescription images (129 images)
 ├── utils/
+│   ├── __init__.py
+│   ├── logging_filter.py
+│   ├── weather_utils.py
+│   ├── pdf_image_extractor.py
+│   ├── medicine_intent.py
 │   ├── data_ingestion.py
 │   ├── ocr_pipeline.py            # PaddleOCR wrapper + parsing
 │   ├── setup_knowledge_base.py    # Orchestrates both ingest scripts
@@ -69,6 +92,10 @@ AroBot_Agentic_RAG_Multi-Modal_Chatbot_System/
 ├── Web Scrape/
 │   ├── generic.csv
 │   └── medicine.csv
+|   └──dosage_form.csv
+|   └──drug_class.csv
+|   └──indication.csv
+|   └──manufacturer.csv
 ├── app.py                         # Simple launcher for the API
 └── requirements.txt
 
