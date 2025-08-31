@@ -25,30 +25,33 @@ def _pick_device() -> str:
     return "cuda" if torch.cuda.is_available() else "cpu"
 
 
-class Embedder:
-    def __new__(cls, model_name: str = _DEFAULT_MODEL):
-        global _EMBEDDER_SINGLETON
-        if _EMBEDDER_SINGLETON is None or getattr(_EMBEDDER_SINGLETON, "_model_name", None) != model_name:
-            _EMBEDDER_SINGLETON = super().__new__(cls)
-            _EMBEDDER_SINGLETON._initialized = False  # type: ignore[attr-defined]
-        return _EMBEDDER_SINGLETON
+# at top
+import os
+...
 
-    def __init__(self, model_name: str = _DEFAULT_MODEL):
+class Embedder:
+    def __init__(self, model_name: str = "sentence-transformers/all-MiniLM-L6-v2"):
         if getattr(self, "_initialized", False):
             return
         self._model_name = model_name
-        device = _pick_device()
 
-        # Try requested/auto device first, then fall back to CPU on any error
+        # Allow override: AROBOT_EMBED_DEVICE=cpu|cuda
+        force_dev = os.getenv("AROBOT_EMBED_DEVICE", "").strip().lower()
+        if force_dev in {"cpu", "cuda"}:
+            device = force_dev
+        else:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+
         try:
             self.model = SentenceTransformer(model_name, device=device)
-            msg_device = torch.cuda.get_device_name(0) if (device == "cuda" and torch.cuda.is_available()) else "cpu"
+            msg_device = torch.cuda.get_device_name(0) if device == "cuda" else "cpu"
             logger.info(f"✅ Loaded embeddings model '{model_name}' on {msg_device}")
-        except Exception as e:
-            logger.warning(f"Embeddings init failed on '{device}' ({e}); falling back to CPU.")
+        except Exception:
+            logger.warning(f"Failed to load {model_name} on {device}, retrying on CPU")
             self.model = SentenceTransformer(model_name, device="cpu")
 
         self._initialized = True  # type: ignore[attr-defined]
+
 
     def embed(self, texts):
         if len(texts) > 100:

@@ -413,15 +413,6 @@ async def upload_prescription(
     raise HTTPException(status_code=500, detail=error_message)
 
 
-# --- Compatibility endpoint so the UI can call /image/analyze or /prescription/upload ----
-@router.post("/image/analyze")
-async def analyze_image_compat(
-    file: UploadFile = File(...),
-    session_id: Optional[str] = Form(None),
-    question: Optional[str] = Form(None),
-):
-    # Delegate to the prescription handler with image_type="general"
-    return await upload_prescription(file=file, query=question, image_type="general", session_id=session_id)
 
 
 # --------------------------------------------------------------------------------------

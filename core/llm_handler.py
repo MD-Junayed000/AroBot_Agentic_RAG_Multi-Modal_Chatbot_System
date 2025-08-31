@@ -97,7 +97,6 @@ class LLMHandler:
             model=self.text_model,
             base_url=self.base_url,
             temperature=0.2,
-            # keep outputs tight and fast
             model_kwargs={"num_ctx": 2048, "num_predict": 320, "top_p": 0.9},
         )
 
@@ -176,19 +175,44 @@ class LLMHandler:
             resp = self.fast_llm.invoke([SystemMessage(content=DEFAULT_SYSTEM), HumanMessage(content=prompt)])
             return getattr(resp, "content", str(resp))
         except Exception:
-            # fallback to main model
             return self.generate_text_response(prompt, system_prompt=DEFAULT_SYSTEM)
 
     def ocr_only(self, image_bytes: bytes) -> Dict[str, Any]:
         """Very fast OCR-only parse used when no complex vision is needed."""
         pipe = OCRPipeline(lang=OCR_LANGUAGE)
-        lines, items = pipe.run_on_bytes(_downscale_jpeg(image_bytes))
+        # run_on_bytes returns (lines, items, header)
+        lines, items, header = pipe.run_on_bytes(_downscale_jpeg(image_bytes))
         return {
             "raw_text": "\n".join(lines),
             "lines": lines,
             "structured_items": items,
             "item_count": len(items),
+            "header": header or {},
         }
+
+    def answer_over_ocr_text(
+        self,
+        question: str,
+        ocr_text: str,
+        conversation_context: str = "",
+    ) -> str:
+        # quick heuristic: try to pull a Doctor name
+        if "doctor" in question.lower() or "dr" in question.lower():
+            m = re.search(r"(Dr\.?\s*[A-Z][A-Za-z.\s'-]{1,40})", ocr_text)
+            if m:
+                return m.group(1).strip()
+
+        prompt = (
+            f"{_clean_conv_ctx(conversation_context)}\n\n"
+            "Answer the user's question using ONLY the OCR text below. "
+            "If the answer is not present, say briefly that you can't find it in the OCR. "
+            "Prefer header lines for doctor/clinic names. Be concise.\n\n"
+            f"OCR TEXT:\n{ocr_text[:8000]}\n\n"
+            f"QUESTION: {question}\n"
+            "ANSWER:"
+        )
+        return self.generate_text_response(prompt, system_prompt=SYSTEM_GENERAL)
+
 
     # ------------------------------- RAG ----------------------------------- #
     def _select_namespaces(self, q: str) -> list[str]:
@@ -199,9 +223,12 @@ class LLMHandler:
             return ["otc", "prescribing", "guidelines"]
         if any(k in ql for k in ["dose", "dosing", "indication", "contraindication", "interaction", "pregnancy"]):
             return ["prescribing", "guidelines", "otc"]
-        if any(k in ql for k in ["anatomy", "nerve", "artery", "muscle", "bone"]):
+        if any(k in ql for k in [
+            "anatomy", "nerve", "artery", "vein", "muscle", "bone",
+            "cell", "organelle", "nucleus", "mitochondria", "golgi", "ribosome",
+            "histology", "cytology", "epithelium", "tissue", "organelles"
+        ]):
             return ["textbook"]
-        # default bias to clinical guidance first
         return ["guidelines", "prescribing", "otc"]
 
     def _gather_rag_context(self, query: str, extra_ctx: Optional[List[str]] = None) -> List[str]:
@@ -209,7 +236,6 @@ class LLMHandler:
         if extra_ctx:
             ctx.extend([c for c in extra_ctx if isinstance(c, str) and c.strip()])
 
-        # Query BD pharmacy index across the selected namespaces
         if self.bd_pharmacy_store:
             for ns in self._select_namespaces(query):
                 try:
@@ -217,7 +243,6 @@ class LLMHandler:
                 except Exception as e:
                     logger.warning(f"BD pharmacy query failed ({ns}): {e}")
 
-        # Optional other stores (global PDFs / medicine)
         try:
             if self.pdf_store:
                 ctx.extend(self.pdf_store.query(query, top_k=2))
@@ -230,7 +255,6 @@ class LLMHandler:
         except Exception as e:
             logger.warning(f"Medicine RAG query failed: {e}")
 
-        # Dedup + trim
         uniq, seen = [], set()
         for c in ctx:
             c = (c or "").strip()
@@ -292,22 +316,28 @@ class LLMHandler:
         ocr_text: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Do OCR first (fast), then a tiny model to normalize fields.
-        Fall back to a single vision pass if OCR yields nothing.
+        OCR-first parse:
+          - robust OCR (PaddleOCR)
+          - extract doctor/clinic from header
+          - normalize meds via fast model
+        If OCR yields nothing, fall back to a single vision pass.
         """
         try:
+            ocr_blob = None
             if not ocr_text:
                 if image_data:
                     ox = self.ocr_only(image_data)
+                    ocr_text = ox.get("raw_text", "")
+                    ocr_blob = ox
                 elif image_path:
                     with open(image_path, "rb") as f:
                         ox = self.ocr_only(f.read())
+                        ocr_text = ox.get("raw_text", "")
+                        ocr_blob = ox
                 else:
                     return {"error": "No image provided", "status": "error"}
-                ocr_text = ox.get("raw_text", "")
 
             if not (ocr_text or "").strip():
-                # final fallback to vision
                 vision_prompt = (
                     "Read the prescription image and extract: patient name/age (if visible), "
                     "doctor/clinic, medicines (name, strength, dosage, frequency, duration), "
@@ -316,11 +346,18 @@ class LLMHandler:
                 vision_analysis = self.generate_vision_response(vision_prompt, image_path, image_data)
                 return {"vision_analysis": vision_analysis, "status": "success"}
 
+            # Use header entities (doctor/clinic) if available from OCR pipeline
+            doc_hint = ""
+            if isinstance(ocr_blob, dict):
+                hdr = ocr_blob.get("header") or {}
+                if hdr.get("doctor") or hdr.get("clinic"):
+                    doc_hint = f"\n\nHEADER HINTS: doctor={hdr.get('doctor','')}, clinic={hdr.get('clinic','')}"
+
             prompt = (
                 "You are parsing a prescription. From the OCR text below, extract a compact JSON with keys: "
                 "patient_name, doctor, clinic, diagnosis, medications[]. Each medication has name, strength, unit, "
-                "dose, frequency, duration, and any note. Only include fields you can infer.\n\n"
-                f"OCR:\n{ocr_text[:6000]}"
+                "dose, frequency, duration, and any note. Only include fields you can infer."
+                f"{doc_hint}\n\nOCR:\n{ocr_text[:6000]}"
             )
             normalized = self._fast_format(prompt)
             return {
@@ -333,20 +370,9 @@ class LLMHandler:
             logger.error(f"Rx analyze error: {e}")
             return {"error": str(e), "status": "error"}
 
-    def answer_over_ocr_text(self, question: str, ocr_text: str) -> str:
-        """High-precision QA directly over the last image's OCR."""
-        ask = question.strip()
-        prompt = (
-            "Answer the question using ONLY this OCR text extracted from the last image. "
-            "If the item is a proper name (patient/doctor/clinic/brand), return it verbatim.\n\n"
-            f"OCR TEXT:\n{ocr_text[:6000]}\n\nQUESTION: {ask}"
-        )
-        return self._fast_format(prompt)
-
     # --------------------------- Medicines (BD) ---------------------------- #
     @traceable(name="answer_medicine_bd")
     def answer_medicine(self, query: str, want_price: bool = False) -> str:
-        # 1) Resolve using live Medex (cached in sqlite) -> covers all BD brands generically
         rec = self.web.resolve_bd_medicine(query)
         brand_line = ""
         if rec.get("status") == "success":
@@ -359,7 +385,6 @@ class LLMHandler:
                 f"\nSource: {rec.get('source','')}"
             )
 
-        # 2) Build a crisp medical summary (brand+generic terms seed the RAG)
         rag_terms = [query]
         if rec.get("status") == "success":
             if rec.get("generic"):
@@ -375,25 +400,20 @@ class LLMHandler:
         )
         summary = self._fast_format(prompt)
 
-        # 3) Price (fast, cached)
         price_line = ""
         if want_price and rec.get("status") == "success":
             p = self.web.get_bd_medicine_price(rec["brand"])
             if p.get("status") == "success":
                 price_line = f"\n\n**Bangladesh retail price ({p['source']}):** {p['price']}"
 
-        # 4) Fallback if resolver failed
         if not brand_line:
             return summary + (("\n\n" + price_line) if price_line else "")
-
         return brand_line + "\n\n" + summary + price_line
 
     # --------------------------- Model utilities --------------------------- #
     def check_model_availability(self) -> Dict[str, Any]:
-        """Check if text/vision models are listed by the local Ollama server."""
         try:
             models = self.client.list()
-            # Extract name list robustly across Ollama versions
             if isinstance(models, dict) and "models" in models:
                 model_list = models["models"]
             elif hasattr(models, "models"):

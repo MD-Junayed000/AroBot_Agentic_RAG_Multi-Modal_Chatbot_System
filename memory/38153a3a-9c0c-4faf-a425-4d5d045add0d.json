@@ -1,0 +1,106 @@
+{
+  "session_id": "38153a3a-9c0c-4faf-a425-4d5d045add0d",
+  "user_id": "chat_1cf16ll_1756624875629",
+  "created_at": "2025-08-31T13:21:15.952203",
+  "last_activity": "2025-08-31T13:23:57.639633",
+  "messages": [
+    {
+      "id": "ea0ad9e1-856b-4eda-8ffb-3290f9ea02de",
+      "timestamp": "2025-08-31T13:21:15.954203",
+      "role": "system",
+      "content": "AroBot session initialized. I'm ready to help with your medical questions.",
+      "type": "system",
+      "metadata": {}
+    },
+    {
+      "id": "872007b9-a39c-4ecb-9984-d3b329b93e6e",
+      "timestamp": "2025-08-31T13:21:59.035105",
+      "role": "user",
+      "content": "Uploaded image: Screenshot 2025-08-31 132146.png",
+      "type": "image",
+      "metadata": {
+        "filename": "Screenshot 2025-08-31 132146.png"
+      }
+    },
+    {
+      "id": "a0c5f970-1c05-40b6-89fa-bbe7ad5798dd",
+      "timestamp": "2025-08-31T13:22:25.186600",
+      "role": "system",
+      "content": "Prescription analyzed: Prescription processed (no medications clearly identified)",
+      "type": "prescription",
+      "metadata": {
+        "summary": "Prescription processed (no medications clearly identified)"
+      }
+    },
+    {
+      "id": "e0029bea-db59-4434-a9a7-b2c7bb9108cc",
+      "timestamp": "2025-08-31T13:22:25.187600",
+      "role": "assistant",
+      "content": " The image is a scientific illustration of a cell, specifically a libriscope structure of the cell. It's labeled as \"Figure 2\" and is part of a larger discussion on the cell's structure. The cell is depicted with various organelles and structures, each labeled with numbers from 1 to 16. These labels correspond to different parts of the cell, such as the nucleus, mitochondria, endoplasmic reticulum, Golgi apparatus, lysosomes, and other membrane-bound organelles. The image is educational in nature, providing a detailed view of the internal structure of a cell. ",
+      "type": "image_analysis_response",
+      "metadata": {}
+    },
+    {
+      "id": "91fe813b-e9ef-4edb-b4a9-03e238fb2eb2",
+      "timestamp": "2025-08-31T13:23:07.330682",
+      "role": "user",
+      "content": "what is Golgi?",
+      "type": "text",
+      "metadata": {}
+    },
+    {
+      "id": "c80fe7a9-e4d1-4ac9-9090-fb29c8d8b39a",
+      "timestamp": "2025-08-31T13:23:57.637633",
+      "role": "assistant",
+      "content": "I'm sorry, but the provided CONTEXT does not contain specific information about any medication or drug relevant to answering your question regarding indications, dosing ranges, cautions, interactions, and side effects in a Bangladesh-specific context. Without this data, I cannot provide accurate details for these aspects of pharmacotherapy within that region's medical framework.\n\nHowever, here are general guidelines on how to approach such questions when relevant information is available:\n\n1. **Indication/Uses**: Look up the drug in a reliable source like an international or Bangladesh-specific pharmacopeia (e.g., WHO Formulary) for its approved uses, which can vary by country due to different regulatory standards and available medications.\n\n2. **Adult Dosing Ranges**: Consult the drug's prescribing information or a trusted medical resource that provides dosing guidelines based on age groups; adult ranges are typically standardized but may require adjustments for specific populations in different countries, including Bangladesh.\n\n3. **Key Cautions (Renal/Hepatic)**: Check the drug's safety profile regarding renal and hepatic impairment as these conditions can affect medication metabolism; dosing may need to be adjusted accordingly in patients with such comorbidities, which is a common consideration worldwide.\n\n4. **Major Interactions**: Review the drug's interaction profile for known contraindications or interactions that could lead to adverse effects when taken concurrently; this information should always come from authoritative sources and may vary by country due to different available medications.\n\n5. **Common Side Effects**: Identify side effects listed in trusted medical resources, which can provide insight into the most frequently observed reactions patients might experience while taking a particular drug. These are generally consistent across countries but should be verified for regional specificity when necessary.\n\nFor accurate and safe information tailored to Bangladesh's context or any other region-specific details, please consult local clinical guidelines, pharmacopeias, or speak directly with healthcare professionals in the area of interest.",
+      "type": "text",
+      "metadata": {}
+    },
+    {
+      "id": "aeec2f46-efb4-4d04-839e-96245e19af3c",
+      "timestamp": "2025-08-31T13:23:57.639633",
+      "role": "user",
+      "content": "what is Golgi?",
+      "type": "query",
+      "metadata": {}
+    },
+    {
+      "id": "8afd1712-bb42-47b4-b943-10406040b49b",
+      "timestamp": "2025-08-31T13:23:57.639633",
+      "role": "assistant",
+      "content": "I'm sorry, but the provided CONTEXT does not contain specific information about any medication or drug relevant to answering your question regarding indications, dosing ranges, cautions, interactions, and side effects in a Bangladesh-specific context. Without this data, I cannot provide accurate details for these aspects of pharmacotherapy within that region's medical framework.\n\nHowever, here are general guidelines on how to approach such questions when relevant information is available:\n\n1. **Indication/Uses**: Look up the drug in a reliable source like an international or Bangladesh-specific pharmacopeia (e.g., WHO Formulary) for its approved uses, which can vary by country due to different regulatory standards and available medications.\n\n2. **Adult Dosing Ranges**: Consult the drug's prescribing information or a trusted medical resource that provides dosing guidelines based on age groups; adult ranges are typically standardized but may require adjustments for specific populations in different countries, including Bangladesh.\n\n3. **Key Cautions (Renal/Hepatic)**: Check the drug's safety profile regarding renal and hepatic impairment as these conditions can affect medication metabolism; dosing may need to be adjusted accordingly in patients with such comorbidities, which is a common consideration worldwide.\n\n4. **Major Interactions**: Review the drug's interaction profile for known contraindications or interactions that could lead to adverse effects when taken concurrently; this information should always come from authoritative sources and may vary by country due to different available medications.\n\n5. **Common Side Effects**: Identify side effects listed in trusted medical resources, which can provide insight into the most frequently observed reactions patients might experience while taking a particular drug. These are generally consistent across countries but should be verified for regional specificity when necessary.\n\nFor accurate and safe information tailored to Bangladesh's context or any other region-specific details, please consult local clinical guidelines, pharmacopeias, or speak directly with healthcare professionals in the area of interest.",
+      "type": "response",
+      "metadata": {}
+    }
+  ],
+  "context": {
+    "last_image_ocr": ""
+  },
+  "prescription_history": [
+    {
+      "id": "6692abba-727a-4722-a10c-5ab436de9a46",
+      "timestamp": "2025-08-31T13:22:25.185601",
+      "prescription_data": {
+        "analysis": " The image is a scientific illustration of a cell, specifically a libriscope structure of the cell. It's labeled as \"Figure 2\" and is part of a larger discussion on the cell's structure. The cell is depicted with various organelles and structures, each labeled with numbers from 1 to 16. These labels correspond to different parts of the cell, such as the nucleus, mitochondria, endoplasmic reticulum, Golgi apparatus, lysosomes, and other membrane-bound organelles. The image is educational in nature, providing a detailed view of the internal structure of a cell. ",
+        "ocr_results": {
+          "raw_text": "",
+          "lines": [],
+          "structured_items": [],
+          "item_count": 0
+        },
+        "type": "general_image_analysis",
+        "status": "success"
+      }
+    }
+  ],
+  "medical_queries": [
+    {
+      "id": "df93f0c5-85e4-4cd3-a6f7-d8f464d771c9",
+      "timestamp": "2025-08-31T13:23:57.638634",
+      "query": "what is Golgi?",
+      "response": "I'm sorry, but the provided CONTEXT does not contain specific information about any medication or drug relevant to answering your question regarding indications, dosing ranges, cautions, interactions, and side effects in a Bangladesh-specific context. Without this data, I cannot provide accurate details for these aspects of pharmacotherapy within that region's medical framework.\n\nHowever, here are general guidelines on how to approach such questions when relevant information is available:\n\n1. **Indication/Uses**: Look up the drug in a reliable source like an international or Bangladesh-specific pharmacopeia (e.g., WHO Formulary) for its approved uses, which can vary by country due to different regulatory standards and available medications.\n\n2. **Adult Dosing Ranges**: Consult the drug's prescribing information or a trusted medical resource that provides dosing guidelines based on age groups; adult ranges are typically standardized but may require adjustments for specific populations in different countries, including Bangladesh.\n\n3. **Key Cautions (Renal/Hepatic)**: Check the drug's safety profile regarding renal and hepatic impairment as these conditions can affect medication metabolism; dosing may need to be adjusted accordingly in patients with such comorbidities, which is a common consideration worldwide.\n\n4. **Major Interactions**: Review the drug's interaction profile for known contraindications or interactions that could lead to adverse effects when taken concurrently; this information should always come from authoritative sources and may vary by country due to different available medications.\n\n5. **Common Side Effects**: Identify side effects listed in trusted medical resources, which can provide insight into the most frequently observed reactions patients might experience while taking a particular drug. These are generally consistent across countries but should be verified for regional specificity when necessary.\n\nFor accurate and safe information tailored to Bangladesh's context or any other region-specific details, please consult local clinical guidelines, pharmacopeias, or speak directly with healthcare professionals in the area of interest.",
+      "type": "general"
+    }
+  ],
+  "long_term_summary": ""
+}
