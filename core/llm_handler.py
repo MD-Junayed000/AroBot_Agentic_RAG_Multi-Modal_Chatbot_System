@@ -168,6 +168,44 @@ class LLMHandler:
         except Exception as e:
             logger.error(f"Error in vision generation: {e}")
             return f"Error analyzing image: {str(e)}"
+        
+    def vision_short_answer(self, question: str, image_path: Optional[str] = None, image_data: Optional[bytes] = None) -> str:
+        """Ask the VLM but force a brief, direct answer."""
+        prompt = (
+            "Answer the user's question using only what is visible in the image. "
+            "Return a single short sentence. Do not describe the image generically."
+            f"\nQUESTION: {question}\nANSWER:"
+        )
+        out = self.generate_vision_response(prompt, image_path=image_path, image_data=image_data)
+        return out.strip()
+
+    def extract_doctor_from_vision(self, image_path: Optional[str] = None, image_data: Optional[bytes] = None) -> str:
+        """Read just the doctor's name from the prescription header."""
+        prompt = (
+            "Read the prescription header and extract ONLY the doctor's name as printed "
+            "(including initials). Output just the name, nothing else."
+            "\nEXAMPLE OUTPUT: Dr. R. Keshwani"
+        )
+        out = self.generate_vision_response(prompt, image_path=image_path, image_data=image_data).strip()
+        # keep a single clean line
+        out = re.sub(r"[\r\n]+", " ", out).strip()
+        # trim quotes/backticks
+        out = out.strip("`\"' ")
+        return out
+
+    def extract_medicines_from_vision(self, image_path: Optional[str] = None, image_data: Optional[bytes] = None) -> str:
+        """List medicine names seen. No doses, no paragraphs."""
+        prompt = (
+            "From the prescription image, extract the medicine NAMES ONLY in order of appearance. "
+            "Return as a comma-separated list on one line. Do not include strength/dose/frequency. "
+            "If uncertain, best-effort guesses."
+            "\nEXAMPLE OUTPUT: Oflazest OZ, Azenac-MR, Andial, Zofer"
+        )
+        out = self.generate_vision_response(prompt, image_path=image_path, image_data=image_data).strip()
+        out = re.sub(r"[\r\n]+", " ", out).strip()
+        out = out.strip("`\"' ")
+        return out
+
 
     # ------------------------------- OCR utils ------------------------------ #
     def _fast_format(self, prompt: str) -> str:
@@ -190,28 +228,23 @@ class LLMHandler:
             "header": header or {},
         }
 
-    def answer_over_ocr_text(
-        self,
-        question: str,
-        ocr_text: str,
-        conversation_context: str = "",
-    ) -> str:
-        # quick heuristic: try to pull a Doctor name
-        if "doctor" in question.lower() or "dr" in question.lower():
+    def answer_over_ocr_text(self, question: str, ocr_text: str, conversation_context: str = "") -> str:
+        """QA over OCR text only; short and honest if missing."""
+        # quick heuristic for doctor name from OCR (fast path)
+        if "doctor" in question.lower() or re.search(r"\bdr\b", question.lower()):
             m = re.search(r"(Dr\.?\s*[A-Z][A-Za-z.\s'-]{1,40})", ocr_text)
             if m:
                 return m.group(1).strip()
 
         prompt = (
             f"{_clean_conv_ctx(conversation_context)}\n\n"
-            "Answer the user's question using ONLY the OCR text below. "
-            "If the answer is not present, say briefly that you can't find it in the OCR. "
-            "Prefer header lines for doctor/clinic names. Be concise.\n\n"
-            f"OCR TEXT:\n{ocr_text[:8000]}\n\n"
-            f"QUESTION: {question}\n"
-            "ANSWER:"
+            "Answer the question using ONLY the OCR text below. "
+            "If the answer is not present, reply exactly: \"Can't find it in the OCR.\" "
+            "Keep it brief.\n\nOCR TEXT:\n"
+            f"{ocr_text[:8000]}\n\nQUESTION: {question}\nANSWER:"
         )
-        return self.generate_text_response(prompt, system_prompt=SYSTEM_GENERAL)
+        return self.generate_text_response(prompt, system_prompt=SYSTEM_GENERAL).strip()
+
 
 
     # ------------------------------- RAG ----------------------------------- #
