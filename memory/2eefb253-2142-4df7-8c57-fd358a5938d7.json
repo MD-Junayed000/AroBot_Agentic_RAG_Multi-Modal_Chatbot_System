@@ -1,0 +1,60 @@
+{
+  "session_id": "2eefb253-2142-4df7-8c57-fd358a5938d7",
+  "user_id": "user_8cadf09e",
+  "created_at": "2025-08-31T22:42:32.767559",
+  "last_activity": "2025-08-31T22:44:16.357047",
+  "messages": [
+    {
+      "id": "eef708e1-a214-4736-98af-8546eb8dd8f1",
+      "timestamp": "2025-08-31T22:42:32.768561",
+      "role": "system",
+      "content": "AroBot session initialized. I'm ready to help with your medical questions.",
+      "type": "system",
+      "metadata": {}
+    },
+    {
+      "id": "4837d1ea-861e-4366-aacd-d5225e4f33f4",
+      "timestamp": "2025-08-31T22:42:32.769565",
+      "role": "user",
+      "content": "Give Bangladesh brand examples and typical retail pack sizes if you can?",
+      "type": "text",
+      "metadata": {}
+    },
+    {
+      "id": "17b468ba-038c-49e4-8f65-4d9f456b5990",
+      "timestamp": "2025-08-31T22:44:16.354034",
+      "role": "assistant",
+      "content": "**Indications for Hypertension Management in Adults:**  \nThe primary indication is the treatment of hypertension to prevent complications such as heart attack, stroke, or kidney failure. Lifestyle modifications are also recommended alongside pharmacological interventcies whenever possible.\n\n**Adult Dosing Ranges for Hypertension Medications in Bangladesh:**  \nDue to the variability of drug prices and availability, generic equivalents should be used when available. Specific dosing ranges depend on individual patient factors such as age, weight, kidney function, etc., which are not provided herein. It is essential for a healthcare provider in Bangladesh or any other country to prescribe based on the most current local guidelines and consider affordability while ensuring efficacy without severe side effects.\n\n**Key Cautions:**  \n- **Renal/Hepatic Impairment:** Drug dosages may need adjustment in patients with kidney or liver issues to avoid accumulation of the medication, which can lead to increased risk of adverse events. Always consult a clinician for personalized advice.\n- **Pregnancy:** Certain antihypertensive drugs are contraindicated during pregnancy due to potential harm to the fetus; always seek specialist guidance in this scenario.\n\n**Major Interactions and Common Side Effects (General Guidance):**  \n- **Drug interactions can occur with over-the-counter medications, supplements, or other prescriptions a patient may be taking. It is crucial to review all current medications before starting treatment for hypertension in Bangladesh and elsewhere.\n- Common side effects of antihypertensive drugs include dizziness, headache, fatigue, nausea, and sometimes more severe reactions like angioedema or electrolyte imbalances. If any adverse symptoms occur, consult a healthcare provider immediately.\n\n**Uncertainty:**  \nThe provided context does not contain specific drug names for Bangladesh-specific brand recommendations; hence general guidance is given herein with an emphasis on the importance of following local guidelines and considering generic options when available in Bangladesh or any other country, while always consulting a healthcare provider.",
+      "type": "text",
+      "metadata": {}
+    },
+    {
+      "id": "7a166491-bc1f-4e7d-bc22-28ed8119d1db",
+      "timestamp": "2025-08-31T22:44:16.356040",
+      "role": "user",
+      "content": "Give Bangladesh brand examples and typical retail pack sizes if you can?",
+      "type": "query",
+      "metadata": {}
+    },
+    {
+      "id": "c304eb38-aa89-472b-8552-f3aa4a14ef01",
+      "timestamp": "2025-08-31T22:44:16.357047",
+      "role": "assistant",
+      "content": "**Indications for Hypertension Management in Adults:**  \nThe primary indication is the treatment of hypertension to prevent complications such as heart attack, stroke, or kidney failure. Lifestyle modifications are also recommended alongside pharmacological interventcies whenever possible.\n\n**Adult Dosing Ranges for Hypertension Medications in Bangladesh:**  \nDue to the variability of drug prices and availability, generic equivalents should be used when available. Specific dosing ranges depend on individual patient factors such as age, weight, kidney function, etc., which are not provided herein. It is essential for a healthcare provider in Bangladesh or any other country to prescribe based on the most current local guidelines and consider affordability while ensuring efficacy without severe side effects.\n\n**Key Cautions:**  \n- **Renal/Hepatic Impairment:** Drug dosages may need adjustment in patients with kidney or liver issues to avoid accumulation of the medication, which can lead to increased risk of adverse events. Always consult a clinician for personalized advice.\n- **Pregnancy:** Certain antihypertensive drugs are contraindicated during pregnancy due to potential harm to the fetus; always seek specialist guidance in this scenario.\n\n**Major Interactions and Common Side Effects (General Guidance):**  \n- **Drug interactions can occur with over-the-counter medications, supplements, or other prescriptions a patient may be taking. It is crucial to review all current medications before starting treatment for hypertension in Bangladesh and elsewhere.\n- Common side effects of antihypertensive drugs include dizziness, headache, fatigue, nausea, and sometimes more severe reactions like angioedema or electrolyte imbalances. If any adverse symptoms occur, consult a healthcare provider immediately.\n\n**Uncertainty:**  \nThe provided context does not contain specific drug names for Bangladesh-specific brand recommendations; hence general guidance is given herein with an emphasis on the importance of following local guidelines and considering generic options when available in Bangladesh or any other country, while always consulting a healthcare provider.",
+      "type": "response",
+      "metadata": {}
+    }
+  ],
+  "context": {},
+  "prescription_history": [],
+  "medical_queries": [
+    {
+      "id": "5b2583d7-5061-4081-87ab-3dc5de7c11f6",
+      "timestamp": "2025-08-31T22:44:16.355040",
+      "query": "Give Bangladesh brand examples and typical retail pack sizes if you can?",
+      "response": "**Indications for Hypertension Management in Adults:**  \nThe primary indication is the treatment of hypertension to prevent complications such as heart attack, stroke, or kidney failure. Lifestyle modifications are also recommended alongside pharmacological interventcies whenever possible.\n\n**Adult Dosing Ranges for Hypertension Medications in Bangladesh:**  \nDue to the variability of drug prices and availability, generic equivalents should be used when available. Specific dosing ranges depend on individual patient factors such as age, weight, kidney function, etc., which are not provided herein. It is essential for a healthcare provider in Bangladesh or any other country to prescribe based on the most current local guidelines and consider affordability while ensuring efficacy without severe side effects.\n\n**Key Cautions:**  \n- **Renal/Hepatic Impairment:** Drug dosages may need adjustment in patients with kidney or liver issues to avoid accumulation of the medication, which can lead to increased risk of adverse events. Always consult a clinician for personalized advice.\n- **Pregnancy:** Certain antihypertensive drugs are contraindicated during pregnancy due to potential harm to the fetus; always seek specialist guidance in this scenario.\n\n**Major Interactions and Common Side Effects (General Guidance):**  \n- **Drug interactions can occur with over-the-counter medications, supplements, or other prescriptions a patient may be taking. It is crucial to review all current medications before starting treatment for hypertension in Bangladesh and elsewhere.\n- Common side effects of antihypertensive drugs include dizziness, headache, fatigue, nausea, and sometimes more severe reactions like angioedema or electrolyte imbalances. If any adverse symptoms occur, consult a healthcare provider immediately.\n\n**Uncertainty:**  \nThe provided context does not contain specific drug names for Bangladesh-specific brand recommendations; hence general guidance is given herein with an emphasis on the importance of following local guidelines and considering generic options when available in Bangladesh or any other country, while always consulting a healthcare provider.",
+      "type": "general"
+    }
+  ],
+  "long_term_summary": ""
+}
