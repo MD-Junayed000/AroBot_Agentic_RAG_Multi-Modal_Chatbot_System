@@ -70,6 +70,13 @@ _PACK_HINT_PAT = re.compile(
     re.I,
 )
 
+# Company detector (Bangladesh pharma manufacturers)
+_COMPANY_PAT = re.compile(
+    r"\b(beximco|square|incepta|renata|aci|eskayef|skf|acme|aristopharma|drug international|orion pharma|aci limited)\b|"
+    r"\b(pharma(?:ceuticals?)?|pharmaceuticals?)\b",
+    re.I,
+)
+
 # ------------------------------- Helpers --------------------------------- #
 
 def _pick_form(text: str) -> Optional[str]:
@@ -127,6 +134,7 @@ def detect_intent(text: str) -> Dict[str, bool | str | None]:
         "is_price": bool(_PRICE_PAT.search(low)),
         "wants_brand_pack": bool(_BRAND_PACK_PAT.search(low)) or _is_bd_context(low),
         "looks_brandish": looks_brandish,
+        "is_company": bool(_COMPANY_PAT.search(low)),
         "wants_dose": bool(_DOSE_PAT.search(low)),
         "wants_indication": bool(_INDIC_PAT.search(low)),
         "wants_side_effects": bool(_SIDE_PAT.search(low)),

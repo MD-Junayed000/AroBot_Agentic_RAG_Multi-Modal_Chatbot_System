@@ -149,9 +149,37 @@ class MedicalAgent:
                         except Exception: pass
                     return {"response": fast_otc, "sources": {"mode": "otc_facts"}, "status": "success"}
 
+            # ---- 2b) Company overview (e.g., "tell me about beximco pharma") ----
+            if intent.get("is_company") and not intent.get("wants_brand_pack"):
+                # Use web search to pull a few snippets
+                web = self.web_search.search_medical_info(q)
+                snippets = []
+                if web and web.get("status") == "success":
+                    snippets = [r.get("snippet", "") for r in web.get("results", [])[:5]]
+                ctx = "\n---\n".join(snippets)
+                prompt = (
+                    "Using the CONTEXT snippets, write a brief profile of the Bangladesh pharmaceutical company mentioned. "
+                    "Include: overview, product domains, notable brands (if well-known), scale/market standing, and website/ticker if available. "
+                    "Keep to 5–7 bullets; avoid speculation.\n\n"
+                    f"CONTEXT\n---\n{ctx}\n---\nQUESTION: {q}"
+                )
+                text = self.llm.generate_text_response(prompt)
+                if session_id and self.mcp:
+                    try: self.mcp.add_assistant_response(session_id, text, message_type="response")
+                    except Exception: pass
+                return {"response": text, "sources": {"web_search": web.get("result_count", 0) if web else 0}, "status": "success"}
+
             # ---- 3) Brand/pack/price shortcuts (non-clinical only) ----
             if intent.get("is_price") or intent.get("wants_brand_pack") or intent.get("looks_brandish"):
                 brand_candidate = extract_candidate_brand(q)
+                if not brand_candidate:
+                    # Try to recover a target from recent conversation (e.g., "Give BD brands?" after dosing talk)
+                    from utils.clinical_facts import OTC_DOSING
+                    cc = conversation_context.lower() if conversation_context else ""
+                    for g, meta in OTC_DOSING.items():
+                        if any(s in cc for s in meta.get("synonyms", []) + [g]):
+                            brand_candidate = g
+                            break
                 answer = self.llm.answer_medicine(brand_candidate, want_price=bool(intent.get("is_price")))
                 if session_id and self.mcp:
                     try: self.mcp.add_assistant_response(session_id, answer, message_type="response")

@@ -710,6 +710,26 @@ async def list_vector_indexes():
         return {"error": str(e), "status": "error"}
 
 
+# Delete a Pinecone index by exact name
+@router.post("/vector/delete-index")
+async def delete_vector_index(index_name: str = Form(...)):
+    try:
+        from pinecone import Pinecone
+        if not PINECONE_API_KEY:
+            raise HTTPException(status_code=500, detail="PINECONE_API_KEY not configured")
+        pc = Pinecone(api_key=PINECONE_API_KEY)
+        # Verify existence
+        names = [i.name for i in pc.list_indexes()]
+        if index_name not in names:
+            raise HTTPException(status_code=404, detail=f"Index '{index_name}' not found")
+        pc.delete_index(index_name)
+        return {"message": f"Deleted index '{index_name}'", "status": "success"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # --------------------------------------------------------------------------------------
 # Medicine search
 # --------------------------------------------------------------------------------------

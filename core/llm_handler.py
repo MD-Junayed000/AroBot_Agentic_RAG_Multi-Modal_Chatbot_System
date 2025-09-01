@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import io
 import re
+import json
 import base64
 import logging
 from typing import List, Dict, Any, Optional, Tuple
@@ -595,7 +596,8 @@ class LLMHandler:
     # --------------------------- Image helpers ----------------------------- #
 
     def vision_short_answer(self, question: str, image_path: Optional[str] = None, image_data: Optional[bytes] = None) -> str:
-        prompt = ("Answer the user's question using only what is visible in the image. "
+        prompt = ("Answer using only what is visible in the image. "
+                  "Do not assume a patient/doctor/diagnosis unless explicitly shown. "
                   "Return a single short sentence.\n"
                   f"QUESTION: {question}\nANSWER:")
         out = self.generate_vision_response(prompt, image_path=image_path, image_data=image_data)
@@ -606,6 +608,7 @@ class LLMHandler:
         ocr = self.ocr_only(image_bytes)
         raw = ocr.get("raw_text", "") or ""
         prompt = ("Describe the image briefly (1–2 sentences). "
+                  "Avoid assuming human identities, 'patient', 'doctor', or diagnoses. "
                   "Prefer exact words from the OCR text when relevant.\n\n"
                   f"OCR Hints:\n{raw[:800]}")
         vis = self.generate_vision_response(prompt=prompt, image_data=image_bytes)

@@ -1097,24 +1097,25 @@
           if (currentFile) {
             const formData = new FormData();
             formData.append("file", currentFile.file);
-            if (message) formData.append("question", message); // server reads 'question'
             formData.append("session_id", currentServerSessionId);
-            // Prescription vs general quick guess (same as before)
-            const guessType = (message || "")
-              .toLowerCase()
-              .match(/rx|prescription|doctor|pill|tablet/)
-              ? "prescription"
-              : "general";
-            // Use the compatibility endpoint that fans into the new fast OCR-first path
-            response = await fetch(
-              guessType === "prescription"
-                ? "/api/v1/prescription/upload"
-                : "/api/v1/image/analyze",
-              {
-                method: "POST",
-                body: formData,
-              }
-            );
+
+            if (currentFile.type === "pdf") {
+              // For PDFs, use the dedicated analyzer. If a message is present, treat as a question; else summary.
+              formData.append("query", (message || ""));
+              response = await fetch("/api/v1/pdf/analyze", { method: "POST", body: formData });
+            } else {
+              // Images: pick prescription vs general by a light heuristic on message text
+              if (message) formData.append("question", message); // server reads 'question'
+              const guessType = (message || "")
+                .toLowerCase()
+                .match(/rx|prescription|doctor|pill|tablet/)
+                ? "prescription"
+                : "general";
+              response = await fetch(
+                guessType === "prescription" ? "/api/v1/prescription/upload" : "/api/v1/image/analyze",
+                { method: "POST", body: formData }
+              );
+            }
           } else {
             response = await fetch("/api/v1/chat", {
               method: "POST",
