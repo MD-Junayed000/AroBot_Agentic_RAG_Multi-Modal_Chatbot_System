@@ -34,7 +34,10 @@ AroBot_Agentic_RAG_Multi-Modal_Chatbot_System/
 ├── api/
 │   ├── __init__.py
 │   ├── main.py                    # FastAPI app (entry or import)
-│   └── routes.py                  # Endpoints (chat, pdf, vector, etc.)
+│   └── core_routes.py                  # Endpoints (chat, pdf, vector, etc.)
+│   └── route/
+│       └── __init__.py
+│       └──  image.py
 ├── config/
 │   ├── __init__.py
 │   └── env_config.py              # Env and paths
@@ -58,7 +61,7 @@ AroBot_Agentic_RAG_Multi-Modal_Chatbot_System/
 │       └── anatomy/
 │           ├── Human Anatomy.pdf
 │           ├── ross-and-wilson-anatomy-and-physiology-in-health-a.pdf
-│           └── color-atlas-of-anatomy-...pdf
+│           └── color-atlas-of-anatomy.pdf
 ├── mcp_server/
 │   ├── __init__.py
 |   ├── conversation_memory.py
