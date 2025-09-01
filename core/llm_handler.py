@@ -13,7 +13,6 @@ from __future__ import annotations
 import os
 import io
 import re
-import json
 import base64
 import logging
 from typing import List, Dict, Any, Optional, Tuple
@@ -31,7 +30,6 @@ from config.env_config import (
     OLLAMA_BASE_URL,
     OLLAMA_TEXT_MODEL,
     OLLAMA_VISION_MODEL,
-    PINECONE_PDF_INDEX,
     PINECONE_MEDICINE_INDEX,
     PINECONE_IMAGE_INDEX,
     PINECONE_BD_PHARMACY_INDEX,
@@ -134,13 +132,9 @@ class LLMHandler:
         # Vision client (LLaVA)
         self.client = ollama.Client(host=self.base_url)
 
-        # Optional RAG stores
+        # Optional RAG stores (PDF store removed; dynamic per-index uploads handled elsewhere)
         self.pdf_store: Optional[PineconeStore] = None
         self.medicine_store: Optional[PineconeStore] = None
-        try:
-            self.pdf_store = PineconeStore(index_name=PINECONE_PDF_INDEX, dimension=384)
-        except Exception as e:
-            logger.warning(f"PDF RAG store init failed: {e}")
         try:
             self.medicine_store = PineconeStore(index_name=PINECONE_MEDICINE_INDEX, dimension=384)
         except Exception as e:
@@ -251,10 +245,7 @@ class LLMHandler:
                 except Exception as e:
                     logger.warning(f"BD pharmacy query failed ({ns}): {e}")
 
-        try:
-            if self.pdf_store: ctx.extend(self.pdf_store.query(query, top_k=2))
-        except Exception as e:
-            logger.warning(f"PDF RAG query failed: {e}")
+        # No default PDF index; PDFs are ingested into ad-hoc indexes or BD namespaces
 
         try:
             if self.medicine_store: ctx.extend(self.medicine_store.query(query, top_k=2))
@@ -596,8 +587,7 @@ class LLMHandler:
     # --------------------------- Image helpers ----------------------------- #
 
     def vision_short_answer(self, question: str, image_path: Optional[str] = None, image_data: Optional[bytes] = None) -> str:
-        prompt = ("Answer using only what is visible in the image. "
-                  "Do not assume a patient/doctor/diagnosis unless explicitly shown. "
+        prompt = ("Answer the user's question using only what is visible in the image. "
                   "Return a single short sentence.\n"
                   f"QUESTION: {question}\nANSWER:")
         out = self.generate_vision_response(prompt, image_path=image_path, image_data=image_data)
@@ -608,7 +598,6 @@ class LLMHandler:
         ocr = self.ocr_only(image_bytes)
         raw = ocr.get("raw_text", "") or ""
         prompt = ("Describe the image briefly (1–2 sentences). "
-                  "Avoid assuming human identities, 'patient', 'doctor', or diagnoses. "
                   "Prefer exact words from the OCR text when relevant.\n\n"
                   f"OCR Hints:\n{raw[:800]}")
         vis = self.generate_vision_response(prompt=prompt, image_data=image_bytes)

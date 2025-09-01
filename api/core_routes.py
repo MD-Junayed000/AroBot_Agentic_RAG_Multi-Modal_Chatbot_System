@@ -565,9 +565,8 @@ async def upload_pdf(
         from langchain_community.document_loaders import PyPDFLoader
         from langchain.text_splitter import RecursiveCharacterTextSplitter
         from core.vector_store import PineconeStore
-        from config.env_config import PINECONE_PDF_INDEX
-
-        target_index = index_name or PINECONE_PDF_INDEX
+        # No default PINECONE_PDF_INDEX: use provided index_name or a generic default
+        target_index = index_name or "arobot-medical-pdf-default"
 
         loader = PyPDFLoader(str(tmp))
         documents = loader.load()
@@ -589,7 +588,7 @@ async def upload_pdf(
             )
 
         store = PineconeStore(index_name=target_index, dimension=384)
-        store.upsert_texts(texts, metas, namespace=namespace)
+        upserted = store.upsert_texts(texts, metas, namespace=namespace) or 0
 
         msg = (
             f"Successfully processed '{file.filename}' into index '{target_index}'"
@@ -602,7 +601,27 @@ async def upload_pdf(
         get_mcp().add_assistant_response(session_id, msg, "pdf_processing_response")
         add_to_conversation_memory(session_id, "Assistant", msg)
 
-        return {"message": msg, "session_id": session_id, "chunks_processed": len(texts), "status": "success"}
+        # Optionally fetch index stats to return vector counts
+        try:
+            from pinecone import Pinecone
+            pc = Pinecone(api_key=PINECONE_API_KEY)
+            stats = pc.Index(target_index).describe_index_stats()
+            total_vectors = (
+                getattr(stats, "total_vector_count", 0)
+                if hasattr(stats, "total_vector_count")
+                else (stats.get("total_vector_count", 0) if isinstance(stats, dict) else 0)
+            )
+        except Exception:
+            total_vectors = None
+
+        return {
+            "message": msg,
+            "session_id": session_id,
+            "chunks_processed": len(texts),
+            "vectors_upserted": upserted,
+            "total_vector_count": total_vectors,
+            "status": "success",
+        }
     finally:
         try:
             tmp.unlink(missing_ok=True)
@@ -660,14 +679,35 @@ async def create_vector_index(
 
         formatted = f"arobot-medical-pdf-{index_name.lower().replace('_','-').replace(' ','-')}"
         store = PineconeStore(index_name=formatted, dimension=384)
-        store.upsert_texts(texts, metas)
+        upserted = store.upsert_texts(texts, metas) or 0
+
+        # Collect stats to return counts for UI
+        try:
+            from pinecone import Pinecone
+            pc = Pinecone(api_key=PINECONE_API_KEY)
+            stats = pc.Index(formatted).describe_index_stats()
+            total_vectors = (
+                getattr(stats, "total_vector_count", 0)
+                if hasattr(stats, "total_vector_count")
+                else (stats.get("total_vector_count", 0) if isinstance(stats, dict) else 0)
+            )
+        except Exception:
+            total_vectors = None
 
         msg = f"Created vector index '{formatted}' with {len(texts)} chunks."
         get_mcp().add_user_message(session_id, f"Created index {formatted}", "vector_index_creation")
         get_mcp().add_assistant_response(session_id, msg, "vector_index_response")
         add_to_conversation_memory(session_id, "Assistant", msg)
 
-        return {"message": msg, "session_id": session_id, "index_name": formatted, "status": "success"}
+        return {
+            "message": msg,
+            "session_id": session_id,
+            "index_name": formatted,
+            "chunks_processed": len(texts),
+            "vectors_upserted": upserted,
+            "total_vector_count": total_vectors,
+            "status": "success",
+        }
     finally:
         try:
             tmp.unlink(missing_ok=True)
@@ -708,26 +748,6 @@ async def list_vector_indexes():
         return {"indexes": out, "total_count": len(out), "status": "success"}
     except Exception as e:
         return {"error": str(e), "status": "error"}
-
-
-# Delete a Pinecone index by exact name
-@router.post("/vector/delete-index")
-async def delete_vector_index(index_name: str = Form(...)):
-    try:
-        from pinecone import Pinecone
-        if not PINECONE_API_KEY:
-            raise HTTPException(status_code=500, detail="PINECONE_API_KEY not configured")
-        pc = Pinecone(api_key=PINECONE_API_KEY)
-        # Verify existence
-        names = [i.name for i in pc.list_indexes()]
-        if index_name not in names:
-            raise HTTPException(status_code=404, detail=f"Index '{index_name}' not found")
-        pc.delete_index(index_name)
-        return {"message": f"Deleted index '{index_name}'", "status": "success"}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 # --------------------------------------------------------------------------------------

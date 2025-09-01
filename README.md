@@ -141,10 +141,9 @@ LANGSMITH_API_KEY=your_langsmith_api_key
 # Pinecone Configuration
 PINECONE_CLOUD=aws
 PINECONE_REGION=us-east-1
-PINECONE_PDF_INDEX=arobot-medical-pdfs
 PINECONE_MEDICINE_INDEX=arobot-medicine-data
-PINECONE_BD_PHARMACY_INDEX= arobot-bd-pharmacy
-PINECONE_IMAGE_INDEX= arobot-anatomy-images
+PINECONE_BD_PHARMACY_INDEX=arobot-bd-pharmacy
+PINECONE_IMAGE_INDEX=arobot-clip
 
 # LangSmith Configuration
 LANGCHAIN_TRACING_V2=true

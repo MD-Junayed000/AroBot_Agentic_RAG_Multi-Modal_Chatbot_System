@@ -1,0 +1,36 @@
+{
+  "session_id": "1fe2ad28-a4c4-407e-a7b3-824c4e0bbb41",
+  "user_id": "user_d8f37339",
+  "created_at": "2025-09-02T02:30:41.998781",
+  "last_activity": "2025-09-02T02:32:39.575979",
+  "messages": [
+    {
+      "id": "07042ff2-6333-49da-af0b-0af54374c0e7",
+      "timestamp": "2025-09-02T02:30:41.999755",
+      "role": "system",
+      "content": "AroBot session initialized. I'm ready to help with your medical questions.",
+      "type": "system",
+      "metadata": {}
+    },
+    {
+      "id": "e7567c1a-b011-4e51-b77c-8d868fa0c146",
+      "timestamp": "2025-09-02T02:32:39.572982",
+      "role": "user",
+      "content": "Created index arobot-medical-pdf-medical-book",
+      "type": "vector_index_creation",
+      "metadata": {}
+    },
+    {
+      "id": "efa05729-ad21-4f36-97d1-270cb5a7b047",
+      "timestamp": "2025-09-02T02:32:39.575979",
+      "role": "assistant",
+      "content": "Created vector index 'arobot-medical-pdf-medical-book' with 5961 chunks.",
+      "type": "vector_index_response",
+      "metadata": {}
+    }
+  ],
+  "context": {},
+  "prescription_history": [],
+  "medical_queries": [],
+  "long_term_summary": ""
+}
