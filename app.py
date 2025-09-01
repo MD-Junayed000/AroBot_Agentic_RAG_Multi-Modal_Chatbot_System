@@ -1,29 +1,25 @@
+# app.py
 """
 AroBot - Multi-Modal Medical Chatbot System
 Main application entry point
 """
+import os
 import uvicorn
-from api.main import app
 from config.env_config import APP_HOST, APP_PORT, DEBUG
 
 if __name__ == "__main__":
+    host = APP_HOST or "127.0.0.1"
+    port = int(APP_PORT or 8000)
     print("🏥 Starting AroBot Multi-Modal Medical Chatbot System...")
-    print(f"🌐 Main interface: http://localhost:{APP_PORT}")
-    print(f"💬 Chat interface: http://localhost:{APP_PORT}/chat") 
-    print(f"📖 API documentation: http://localhost:{APP_PORT}/docs")
-    print(f"🔍 Health check: http://localhost:{APP_PORT}/health")
-    print("\n🎯 Features available:")
-    print("   • 💊 Medicine information with RAG")
-    print("   • 🔍 Prescription image analysis") 
-    print("   • 🧠 Multi-modal AI assistance")
-    print("   • 📊 LangSmith monitoring")
-    print("   • 💾 Conversation memory")
-    print("\n⚡ Starting server...")
-    
+    print(f"🌐 UI:       http://{host}:{port}/chat")
+    print(f"📖 OpenAPI:  http://{host}:{port}/docs")
+    print(f"🔍 Health:   http://{host}:{port}/health")
+    print("\n⚡ Starting server...\n")
+    # Use module:app target (prevents double import of app object)
     uvicorn.run(
         "api.main:app",
-        host=APP_HOST,
-        port=APP_PORT,
-        reload=DEBUG,
+        host=host,
+        port=port,
+        reload=bool(DEBUG),
         log_level="info"
     )

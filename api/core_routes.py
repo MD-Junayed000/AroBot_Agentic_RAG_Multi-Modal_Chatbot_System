@@ -16,6 +16,12 @@ from pydantic import BaseModel
 from config.env_config import TEMPLATES_DIR, PINECONE_API_KEY
 from mcp_server.mcp_handler import MCPHandler
 
+from core.llm_handler import LLMHandler
+try:
+    from core.llm_handler import _dedupe_paragraphs as _dd
+except Exception:
+    _dd = None
+
 
 
 logger = logging.getLogger(__name__)
@@ -222,10 +228,18 @@ def _get_weather_text(lat: float, lon: float) -> str:
 # --------------------------------------------------------------------------------------
 # Pydantic models
 # --------------------------------------------------------------------------------------
+
+from pydantic import BaseModel
 class ChatMessage(BaseModel):
     message: str
+    # Accept either "session_id" or "conversation_id" from the client
     session_id: Optional[str] = None
+    conversation_id: Optional[str] = None
     use_web_search: Optional[bool] = False
+
+    class Config:
+        allow_population_by_field_name = True
+        extra = "ignore"
 
 
 class PrescriptionQuery(BaseModel):
@@ -275,12 +289,17 @@ async def get_session_history(session_id: str):
 @router.post("/chat")
 async def chat_with_bot(payload: ChatMessage):
     try:
-        # session
-        session_id = payload.session_id or get_mcp().initialize_session().get("session_id")
+        # 1) pick a *client-facing* id (what your frontend keeps using)
+        client_id = payload.session_id or payload.conversation_id
+        if not client_id:
+            client_id = get_mcp().initialize_session().get("session_id")
+
+        # 2) resolve/bind an internal MCP id we actually write to
+        mcp_id = _resolve_or_bind_session(client_id)
 
         # record user message (both memories)
-        get_mcp().add_user_message(session_id, payload.message)
-        add_to_conversation_memory(session_id, "User", payload.message)
+        get_mcp().add_user_message(mcp_id, payload.message)
+        add_to_conversation_memory(client_id, "User", payload.message)  # local ring buffer keyed by client_id
 
         lower_msg = payload.message.lower()
 
@@ -294,45 +313,45 @@ async def chat_with_bot(payload: ChatMessage):
                 except Exception:
                     pass
             wx = _get_weather_text(lat, lon)
-            add_to_conversation_memory(session_id, "Assistant", wx)
-            get_mcp().add_assistant_response(session_id, wx)
-            return {"response": wx, "session_id": session_id, "sources": {"weather": "open-meteo"}, "status": "success"}
+            add_to_conversation_memory(client_id, "Assistant", wx)
+            get_mcp().add_assistant_response(mcp_id, wx)
+            return {"response": wx, "session_id": client_id, "sources": {"weather": "open-meteo"}, "status": "success"}
 
         # fast memory answer?
-        transcript = get_conversation_memory_context(session_id)
-        mem = perfect_memory.answer_if_memory(payload.message, session_id, transcript)
+        transcript = get_conversation_memory_context(client_id)
+        mem = perfect_memory.answer_if_memory(payload.message, client_id, transcript)
         if mem:
-            add_to_conversation_memory(session_id, "Assistant", mem)
-            get_mcp().add_assistant_response(session_id, mem)
-            return {"response": mem, "session_id": session_id, "sources": {"memory": "pattern"}, "status": "success"}
+            add_to_conversation_memory(client_id, "Assistant", mem)
+            get_mcp().add_assistant_response(mcp_id, mem)
+            return {"response": mem, "session_id": client_id, "sources": {"memory": "pattern"}, "status": "success"}
 
-        # read last OCR/PDF context for follow-ups
+        # read last OCR/PDF context for follow-ups (from MCP session context)
         try:
-            sess_ctx = get_mcp().memory.active_sessions.get(session_id, {}).get("context", {})
+            sess_ctx = get_mcp().memory.active_sessions.get(mcp_id, {}).get("context", {})
         except Exception:
             sess_ctx = {}
 
         # direct OCR follow-ups (names/phone/date/clinic etc.) BEFORE heavy RAG
         if sess_ctx.get("last_image_ocr") and _looks_like_ocr_followup(lower_msg):
             ans = get_medical_agent().llm.answer_over_ocr_text(payload.message, sess_ctx["last_image_ocr"])
-            add_to_conversation_memory(session_id, "Assistant", ans)
-            get_mcp().add_assistant_response(session_id, ans)
-            return {"response": ans, "session_id": session_id, "sources": {"ocr": "last_image"}, "status": "success"}
+            add_to_conversation_memory(client_id, "Assistant", ans)
+            get_mcp().add_assistant_response(mcp_id, ans)
+            return {"response": ans, "session_id": client_id, "sources": {"ocr": "last_image"}, "status": "success"}
 
         # direct PDF follow-up (“this pdf”, “the pdf”, etc.) BEFORE heavy RAG
         if sess_ctx.get("last_pdf") and any(k in lower_msg for k in ["this pdf", "the pdf", "that pdf", "pdf document"]):
             ans = get_medical_agent().llm.answer_over_pdf_text(payload.message, sess_ctx["last_pdf"], conversation_context=transcript)
-            add_to_conversation_memory(session_id, "Assistant", ans)
-            get_mcp().add_assistant_response(session_id, ans)
-            return {"response": ans, "session_id": session_id, "sources": {"pdf": "last_pdf"}, "status": "success"}
+            add_to_conversation_memory(client_id, "Assistant", ans)
+            get_mcp().add_assistant_response(mcp_id, ans)
+            return {"response": ans, "session_id": client_id, "sources": {"pdf": "last_pdf"}, "status": "success"}
 
         # medicine price intent (“price of Napa”, “Napa price”, etc.)
         if _looks_like_price(lower_msg):
             text = get_medical_agent().llm.answer_medicine(payload.message, want_price=True)
-            add_to_conversation_memory(session_id, "Assistant", text)
-            get_mcp().add_assistant_response(session_id, text)
-            get_mcp().record_medical_query(session_id, payload.message, text, "medicine_price")
-            return {"response": text, "session_id": session_id, "sources": {"resolver": "pharma"}, "status": "success"}
+            add_to_conversation_memory(client_id, "Assistant", text)
+            get_mcp().add_assistant_response(mcp_id, text)
+            get_mcp().record_medical_query(mcp_id, payload.message, text, "medicine_price")
+            return {"response": text, "session_id": client_id, "sources": {"resolver": "pharma"}, "status": "success"}
 
         # full LLM handling (RAG + conversation context)
         # Augment context with last uploaded PDF/Image OCR breadcrumbs for the model
@@ -345,25 +364,34 @@ async def chat_with_bot(payload: ChatMessage):
 
         resp = get_medical_agent().handle_text_query(
             payload.message,
-            session_id=session_id,
+            session_id=mcp_id,  # pass MCP id to anything that writes to MCP
             conversation_context=augmented_context,
             use_web_search=payload.use_web_search,
         )
 
         if resp.get("status") == "success":
             text = resp.get("response", "")
-            add_to_conversation_memory(session_id, "Assistant", text)
-            get_mcp().add_assistant_response(session_id, text)
-            get_mcp().record_medical_query(session_id, payload.message, text)
-            return {"response": text, "session_id": session_id, "sources": resp.get("sources", {}), "status": "success"}
+
+            # ---- Global output guards ----
+            text = LLMHandler._safety_footer(text) if hasattr(LLMHandler, "_safety_footer") else text
+            if _dd:
+                text = _dd(text)
+            # --------------------------------
+
+            add_to_conversation_memory(client_id, "Assistant", text)
+            get_mcp().add_assistant_response(mcp_id, text)
+            get_mcp().record_medical_query(mcp_id, payload.message, text)
+            return {"response": text, "session_id": client_id, "sources": resp.get("sources", {}), "status": "success"}
+
 
         err = f"Error: {resp.get('error', 'Unknown error')}"
-        get_mcp().add_assistant_response(session_id, err)
-        return {"response": err, "session_id": session_id, "status": "error"}
+        get_mcp().add_assistant_response(mcp_id, err)
+        return {"response": err, "session_id": client_id, "status": "error"}
 
     except Exception as e:
         logger.exception("Chat error")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 # --------------------------------------------------------------------------------------
@@ -763,3 +791,52 @@ async def image_search(file: UploadFile = File(...), top_k: int = 6):
     res = idx.query_by_image(pil, top_k=top_k, namespace="anatomy")
     return {"matches": res.get("matches", [])}
 
+# Alias: external conversation_id -> internal MCP session_id
+_session_alias: Dict[str, str] = {}
+
+def _mcp_has_session(sid: str) -> bool:
+    try:
+        mem = get_mcp().memory.active_sessions  # type: ignore[attr-defined]
+        return sid in (mem or {})
+    except Exception:
+        return False
+
+def _resolve_or_bind_session(external_id: str | None) -> str:
+    """
+    If client provides a conversation_id that MCP doesn't know,
+    create a real MCP session and alias it to the client's id.
+    Returns the *internal* MCP id to use for MCP calls.
+    """
+    if not external_id:
+        return get_mcp().initialize_session().get("session_id")
+
+    # already aliased?
+    if external_id in _session_alias:
+        real = _session_alias[external_id]
+        if _mcp_has_session(real):
+            return real
+        # MCP forgot? re-create and re-bind
+        new_sid = get_mcp().initialize_session().get("session_id")
+        _session_alias[external_id] = new_sid
+        return new_sid
+
+    # client id happens to be a real MCP session
+    if _mcp_has_session(external_id):
+        _session_alias[external_id] = external_id
+        return external_id
+
+    # create and bind
+    new_sid = get_mcp().initialize_session().get("session_id")
+    _session_alias[external_id] = new_sid
+    return new_sid
+
+@router.get("/system/pinecone")
+async def pinecone_health():
+    try:
+        from pinecone import Pinecone
+        from config.env_config import PINECONE_API_KEY, PINECONE_REGION
+        pc = Pinecone(api_key=PINECONE_API_KEY)
+        names = [i.name for i in pc.list_indexes()]
+        return {"ok": True, "indexes": names, "region": PINECONE_REGION, "status": "success"}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "status": "error"}

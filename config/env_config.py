@@ -34,6 +34,10 @@ PINECONE_BD_PHARMACY_INDEX = _get("PINECONE_BD_PHARMACY_INDEX")
 PINECONE_IMAGE_INDEX = _get("PINECONE_IMAGE_INDEX")
 EMBEDDING_DIMENSION = int(_get("EMBEDDING_DIMENSION", "384"))
 
+# Pinecone hardening knobs
+PINECONE_QUERY_TIMEOUT_S = float(os.getenv("PINECONE_QUERY_TIMEOUT_S", "3.5"))  # fail fast
+PINECONE_ENABLE = os.getenv("PINECONE_ENABLE", "1").strip().lower() not in ("0", "false", "no", "")
+
 # ---------- LangSmith ----------
 LANGCHAIN_TRACING_V2 = _get_bool("LANGCHAIN_TRACING_V2")
 LANGCHAIN_ENDPOINT = _get("LANGCHAIN_ENDPOINT")
