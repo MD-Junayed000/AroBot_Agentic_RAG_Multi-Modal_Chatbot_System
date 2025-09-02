@@ -26,6 +26,7 @@ class PineconeStore:
         self._pc: Optional[Pinecone] = None
         self._index = None
         self._disabled = not PINECONE_ENABLE
+        self._embedder = None  # lazy
 
     # ----------- internal -----------
     def _ensure_client(self):
@@ -50,6 +51,17 @@ class PineconeStore:
             )
         self._index = self._pc.Index(self.index_name)
 
+    def _ensure_embedder(self):
+        """Try to initialize a sentence-transformers Embedder. Fallback to stub on failure."""
+        if self._embedder is not None:
+            return
+        try:
+            # Local import to avoid hard dependency if user doesn't install sentence-transformers
+            from core.embeddings import Embedder  # type: ignore
+            self._embedder = Embedder()
+        except Exception:
+            self._embedder = None
+
     # ----------- public API -----------
     def upsert_texts(self, texts: List[str], metadatas: List[Dict[str, Any]], namespace: Optional[str] = None) -> int:
         """Embed and upsert in batches; returns number of vectors upserted."""
@@ -64,9 +76,20 @@ class PineconeStore:
         total = 0
         batch_size = int(os.getenv("PINECONE_BATCH", "64"))
         N = min(len(texts), len(metadatas))
+        # Try to load embedder once
+        self._ensure_embedder()
         for start in range(0, N, batch_size):
             end = min(start + batch_size, N)
             vectors: List[Dict[str, Any]] = []
+            # Pre-compute embeddings for this batch
+            embeddings: List[List[float]]
+            if self._embedder is not None:
+                try:
+                    embeddings = self._embedder.embed(texts[start:end])  # type: ignore[attr-defined]
+                except Exception:
+                    embeddings = [self._embed_stub(texts[i]) for i in range(start, end)]
+            else:
+                embeddings = [self._embed_stub(texts[i]) for i in range(start, end)]
             for i in range(start, end):
                 t = texts[i]
                 md = dict(metadatas[i] or {})
@@ -75,7 +98,7 @@ class PineconeStore:
                     md["text"] = t
                 vectors.append({
                     "id": f"{self.index_name}-{batch_id}-{i}",
-                    "values": self._embed_stub(t),
+                    "values": embeddings[i - start],
                     "metadata": md,
                 })
             try:
@@ -133,7 +156,15 @@ class PineconeStore:
 
         def _worker():
             try:
-                qv = self._embed_stub(text)
+                # Try real embedder; fallback to stub
+                self._ensure_embedder()
+                if self._embedder is not None:
+                    try:
+                        qv = self._embedder.embed([text])[0]  # type: ignore[attr-defined]
+                    except Exception:
+                        qv = self._embed_stub(text)
+                else:
+                    qv = self._embed_stub(text)
                 res = self._index.query(
                     vector=qv,
                     top_k=top_k,

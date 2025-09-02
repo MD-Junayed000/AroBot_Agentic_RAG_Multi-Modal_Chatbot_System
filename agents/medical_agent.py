@@ -293,6 +293,20 @@ class MedicalAgent:
             if web_results and web_results.get("status") == "success":
                 context.extend([r.get("snippet", "") for r in web_results.get("results", [])[:3]])
 
+            # Hard grounding guard: if no KB hits and no web snippets, avoid free-form hallucination
+            kb_hits = (rag_response.get("medical_sources", 0) or 0) + (rag_response.get("medicine_sources", 0) or 0)
+            web_ok = bool(web_results and web_results.get("status") == "success" and (web_results.get("result_count", 0) or 0) > 0)
+            if kb_hits == 0 and not web_ok:
+                safe_msg = (
+                    "I don’t have enough trusted sources locally to answer confidently. "
+                    "You can: upload a PDF/image for me to analyze, or enable web search so I can fetch current guidance."
+                )
+                return {
+                    "response": safe_msg,
+                    "sources": {"knowledge_base": 0, "web_search": 0},
+                    "status": "success",
+                }
+
             final_response = self.llm.answer_medical_query(q, context=context, conversation_context=conversation_context)
 
             # Guard against unhelpful refusals for simple topics
