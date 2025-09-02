@@ -360,6 +360,9 @@ async def chat_with_bot(payload: ChatMessage):
             extra_blocks.append(f"ATTACHED_PDF_TEXT:\n{sess_ctx['last_pdf']}")
         if sess_ctx.get("last_image_ocr") and "image" in lower_msg:
             extra_blocks.append(f"ATTACHED_IMAGE_OCR:\n{sess_ctx['last_image_ocr']}")
+        # If prior image topics exist (from CLIP matches), include them to aid follow-ups like “what is mitochondria?”
+        if sess_ctx.get("last_image_topics") and any(k in lower_msg for k in ["mitochond", "lysos", "nucleus", "golgi", "riboso", "anatomy", "cell", "organelles"]):
+            extra_blocks.append(f"IMAGE_TOPICS_HINTS: {sess_ctx['last_image_topics']}")
         augmented_context = transcript + ("\n\n" + "\n\n".join(extra_blocks) if extra_blocks else "")
 
         resp = get_medical_agent().handle_text_query(
@@ -430,6 +433,9 @@ async def upload_prescription(
             sess = get_mcp().memory.active_sessions.get(session_id, {})
             ocr_text = result.get("ocr_results", {}).get("raw_text", "")
             sess.setdefault("context", {})["last_image_ocr"] = (ocr_text or "")[:4000]
+            topics = "; ".join((result.get("image_context") or [])[:3])
+            if topics:
+                sess.setdefault("context", {})["last_image_topics"] = topics[:600]
             get_mcp().memory._save_session(session_id)
         except Exception:
             pass

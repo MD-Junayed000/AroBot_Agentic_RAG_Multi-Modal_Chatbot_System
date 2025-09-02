@@ -1,12 +1,12 @@
 {
-  "session_id": "507057af-60f3-42f1-ab98-dd70587cf7c1",
-  "user_id": "chat_z8imrfg_1756759224662",
-  "created_at": "2025-09-02T02:42:40.063004",
-  "last_activity": "2025-09-02T02:42:40.064010",
+  "session_id": "e7d66b47-5021-4593-8e15-833debee85fb",
+  "user_id": "chat_emuea50_1756797505378",
+  "created_at": "2025-09-02T13:18:26.883249",
+  "last_activity": "2025-09-02T13:18:26.885274",
   "messages": [
     {
-      "id": "2a7e2f64-7c79-4d49-b858-844f7e7d9b84",
-      "timestamp": "2025-09-02T02:42:40.064010",
+      "id": "c9bf8faf-7460-424d-804f-2d5e3b6e6962",
+      "timestamp": "2025-09-02T13:18:26.885274",
       "role": "system",
       "content": "AroBot session initialized. I'm ready to help with your medical questions.",
       "type": "system",

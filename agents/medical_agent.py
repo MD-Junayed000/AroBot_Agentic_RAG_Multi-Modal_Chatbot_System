@@ -98,15 +98,49 @@ class MedicalAgent:
             ocr = self.llm.ocr_only(img_bytes)
             raw = ocr.get("raw_text", "") or ""
 
+            # If user asks for explicit OCR fields, answer directly
             if user_query:
                 ql = user_query.lower()
                 if any(k in ql for k in ["what is written","what is the name","name in the image","doctor","patient","phone","date","clinic"]):
                     direct = self.llm.answer_over_ocr_text(user_query, raw)
                     return {"analysis": direct, "ocr_results": ocr, "type": "general_image_analysis", "status": "success"}
 
-            # No prompt? produce a short description
+            # Try CLIP image retrieval from anatomy index
+            try:
+                from core.image_index import CLIPImageIndex
+                idx = CLIPImageIndex()
+                pil = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+                ivals = idx.query_by_image(pil, top_k=6, namespace="anatomy")
+                matches = ivals.get("matches", []) if isinstance(ivals, dict) else []
+                captions = [m.get("metadata", {}).get("caption", "") for m in matches]
+                ctx = [c for c in captions if c]
+            except Exception:
+                ctx = []
+
+            # If user asked a conceptual question (mitochondria, lysosome, etc.),
+            # use encyclopedic answer with any context we have. If CLIP provided
+            # no hints, enrich with light web snippets so the answer doesn't stall.
+            if user_query and any(t in user_query.lower() for t in [
+                "mitochondria","mitochondrion","lysosome","nucleus","ribosome","golgi","endoplasmic","skeletal","anatomy","cell"
+            ]):
+                web_ctx: List[str] = []
+                try:
+                    if not ctx:
+                        web = self.web_search.search_medical_info(user_query, max_results=3)
+                        if web and web.get("status") == "success":
+                            web_ctx = [r.get("snippet", "") for r in web.get("results", [])[:3]]
+                except Exception:
+                    web_ctx = []
+
+                rich_ctx = (ctx or []) + (web_ctx or [])
+                text = self.llm.answer_general_knowledge(user_query, context=rich_ctx)
+                return {"analysis": text, "ocr_results": ocr, "image_context": (ctx or [])[:3], "type": "general_image_analysis", "status": "success"}
+
+            # Otherwise produce a brief description, enriched by any hints from CLIP captions
             brief = self.llm.default_image_brief(img_bytes)
-            return {"analysis": brief, "ocr_results": ocr, "type": "general_image_analysis", "status": "success"}
+            if ctx:
+                brief = f"{brief}\n\nContext matches: " + "; ".join(ctx[:3])
+            return {"analysis": brief, "ocr_results": ocr, "image_context": ctx[:3], "status": "success"}
 
         except Exception as e:
             logger.exception("Error handling general image")
@@ -131,6 +165,25 @@ class MedicalAgent:
         try:
             q = query.strip()
             intent = detect_intent(q)
+
+            # ---- 0) Greetings/small talk ----
+            greet_tokens = ["hi", "hello", "hey", "good morning", "good evening", "good afternoon"]
+            if len(q) <= 32 and any(q.lower().startswith(g) for g in greet_tokens):
+                text = self.llm.greeting_response(q)
+                return {"response": text, "sources": {"mode": "greeting"}, "status": "success"}
+
+            # ---- 0b) General anatomy / definition topics ----
+            anatomy_terms = [
+                "anatomy","cell","cells","organelles","organelle","nucleus","mitochondria","mitochondrion",
+                "golgi","lysosome","lysosomes","endoplasmic reticulum","ribosome","skeletal","bone","muscle",
+            ]
+            is_definition = any(t in q.lower() for t in ["what is","define","explain","tell about","overview of"]) or len(q.split()) <= 3
+            is_anatomy = any(t in q.lower() for t in anatomy_terms)
+            if is_definition or is_anatomy:
+                # Pull a little RAG context first (BD pharmacy/textbook namespaces via llm handler)
+                context = self.llm._gather_rag_context(q)
+                text = self.llm.answer_general_knowledge(q, context=context, conversation_context=conversation_context)
+                return {"response": text, "sources": {"mode": "encyclopedic", "kb_hits": len(context)}, "status": "success"}
 
             # ---- 1) Clinical case goes straight to clinical chain ----
             if intent.get("is_clinical_case"):
@@ -218,6 +271,13 @@ class MedicalAgent:
                 context.extend([r.get("snippet", "") for r in web_results.get("results", [])[:3]])
 
             final_response = self.llm.answer_medical_query(q, context=context, conversation_context=conversation_context)
+
+            # Guard against unhelpful refusals for simple topics
+            refusal_markers = ["i cannot", "i can't", "i am unable", "i'm unable", "i'm sorry"]
+            if (any(t in q.lower() for t in ["mitochond", "lysos", "nucleus", "anatomy", "skeletal"]) or len(q.split()) <= 3) and \
+               any(m in (final_response or "").lower() for m in refusal_markers):
+                gctx = self.llm._gather_rag_context(q)
+                final_response = self.llm.answer_general_knowledge(q, context=gctx, conversation_context=conversation_context)
 
             if session_id and self.mcp:
                 try: self.mcp.add_assistant_response(session_id, final_response, message_type="response")

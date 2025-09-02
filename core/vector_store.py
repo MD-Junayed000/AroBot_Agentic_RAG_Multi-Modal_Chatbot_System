@@ -90,6 +90,35 @@ class PineconeStore:
                 pass
         return total
 
+    # Utility used by CLIP image pipelines that already have vectors
+    def _safe_upsert(self, vectors: List[Dict[str, Any]], namespace: str = "") -> int:
+        """Upsert pre-built vectors with retries and chunking. Returns count."""
+        try:
+            self._ensure_index()
+        except Exception:
+            return 0
+
+        # pinecone 4MB limit per request – keep batches small
+        batch_size = int(os.getenv("PINECONE_BATCH", "32"))
+        total = 0
+        for start in range(0, len(vectors), batch_size):
+            chunk = vectors[start:start + batch_size]
+            try:
+                resp = self._index.upsert(vectors=chunk, namespace=namespace)
+                if isinstance(resp, dict) and "upserted_count" in resp:
+                    total += int(resp["upserted_count"]) or 0
+                else:
+                    total += len(chunk)
+            except Exception:
+                # last resort: single inserts
+                for v in chunk:
+                    try:
+                        self._index.upsert(vectors=[v], namespace=namespace)
+                        total += 1
+                    except Exception:
+                        pass
+        return total
+
     def query(self, text: str, top_k: int = 4, namespace: Optional[str] = None) -> List[str]:
         """
         Time-boxed Pinecone query. If it doesn't finish within PINECONE_QUERY_TIMEOUT_S seconds,

@@ -15,6 +15,7 @@ import io
 import re
 import base64
 import logging
+import json
 from typing import List, Dict, Any, Optional, Tuple
 
 from PIL import Image, UnidentifiedImageError
@@ -280,6 +281,31 @@ class LLMHandler:
         if red:
             return text + "\n\n**If this is about a real person with urgent symptoms, seek emergency care immediately.**"
         return text
+
+    # ----------------------- General knowledge answers -------------------- #
+
+    def answer_general_knowledge(self, query: str, context: Optional[List[str]] = None, conversation_context: str = "") -> str:
+        """
+        Friendly encyclopedic answer for greetings/definitions/anatomy topics.
+        Keeps responses concise, avoids clinical dosing unless explicitly asked.
+        """
+        ctx_block = "\n---\n".join(context or []) if context else ""
+        prompt = (
+            "Answer the user's question clearly and directly. "
+            "If this is a definition or anatomy topic, include: what it is, key functions, and 2-3 high-yield facts. "
+            "If the question is broad (e.g., 'human anatomy'), provide a brief overview and end with three focused options the user can pick to go deeper. "
+            "Avoid drug dosing or brand names unless explicitly requested.\n\n"
+        )
+        if ctx_block:
+            prompt += f"CONTEXT\n---\n{ctx_block}\n---\n"
+        prompt += f"QUESTION: {query}\n\nAnswer:"
+        return self.generate_text_response(prompt, system_prompt=SYSTEM_GENERAL)
+
+    def greeting_response(self, text: str = "") -> str:
+        return (
+            "Hi! I’m AroBot. I can chat normally and also help with medical questions, prescriptions, PDFs, and images. "
+            "Ask me anything or upload a file to get started."
+        )
 
     @traceable(name="medical_query")
     def answer_medical_query(self, query: str, context: Optional[List[str]] = None, conversation_context: str = "") -> str:
