@@ -38,6 +38,8 @@ ABBREV = {
 FREQ_PAT = r"(once daily|twice daily|thrice daily|four times daily|as needed|at bedtime|immediately)"
 DUR_PAT  = r"(\d+\s*(day|days|week|weeks|month|months))"
 STR_PAT  = r"(\d{1,4})\s*(mg|mcg|g|ml)"
+# e.g., 1-0-1, 0-1-0, 1-1-1, 1 x 5 days
+DOSE_PATTERN_RE = re.compile(r"\b\d(?:\s*[-xX]\s*\d){1,3}\b")
 
 DOCTOR_RX_RE = re.compile(r"\b(Dr\.?\s*[A-Z][\w.\-' ]{1,40})\b", re.IGNORECASE)
 
@@ -111,7 +113,9 @@ def parse_line(line: str) -> Dict[str, Any]:
         strength, unit = m.group(1), m.group(2)
     freq     = (re.search(FREQ_PAT, L).group(1) if re.search(FREQ_PAT, L) else None)
     duration = (re.search(DUR_PAT,  L).group(1) if re.search(DUR_PAT,  L) else None)
-    return {"raw": line.strip(), "strength": strength, "unit": unit, "frequency": freq, "duration": duration}
+    dose_pat = DOSE_PATTERN_RE.search(line)
+    dose_pattern = dose_pat.group(0) if dose_pat else None
+    return {"raw": line.strip(), "strength": strength, "unit": unit, "frequency": freq, "duration": duration, "dose_pattern": dose_pattern}
 
 def extract_header_entities(lines: List[str]) -> Dict[str, Any]:
     """Pull doctor/clinic hints from the top 10 lines (letterhead & headers)."""

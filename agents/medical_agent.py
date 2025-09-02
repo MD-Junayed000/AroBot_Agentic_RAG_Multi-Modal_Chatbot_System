@@ -79,8 +79,10 @@ class MedicalAgent:
                 or self.llm.default_image_brief(img_bytes)  # fallback: brief
             )
 
-            if follow_up_answer:
+            if follow_up_answer and follow_up_answer.strip() != "Can't find it in the OCR.":
                 analysis_text = f"{analysis_text}\n\n**Follow-up:** {follow_up_answer}"
+            elif follow_up_answer:
+                analysis_text = f"{analysis_text}\n\n(That specific detail was not found in the OCR text.)"
 
             return {
                 "prescription_analysis": analysis_text,
@@ -172,12 +174,37 @@ class MedicalAgent:
                 text = self.llm.greeting_response(q)
                 return {"response": text, "sources": {"mode": "greeting"}, "status": "success"}
 
+            # About/capabilities/experience questions (avoid triggering clinical chain)
+            ql = q.lower().strip()
+            about_tokens = [
+                "who are you","what are you","about you","about yourself","what can you do","capabilities",
+                "skills","ability","abilities","your experience","your experiences","experience","experiences",
+                "who made you","who created you","are you a doctor","expertise","what is your expertise",
+            ]
+            if any(tok in ql for tok in about_tokens) or ql in {"about","help"}:
+                text = self.llm.about_response()
+                return {"response": text, "sources": {"mode": "about"}, "status": "success"}
+
+            # Short acknowledgements like “ok”, “thanks” should not trigger medical essays
+            small_talk = {
+                "ok","okay","k","kk","thanks","thank you","thx","hmm","hmmm","h","huh",
+                "yes","no","yep","yup","sure","fine","cool","nice","great","alright","got it","understood",
+            }
+            if ql in small_talk or (len(q.split()) <= 2 and not any(t in ql for t in [
+                "what is","define","explain","meaning","dose","dosing","symptom","treatment","cause",
+                "anatomy","drug","medicine","tablet","capsule","syrup","pain","fever","diarrhea","cough"
+            ])):
+                brief = (
+                    "Got it. How can I help? You can ask about symptoms, medicines, upload a prescription image, or a PDF."
+                )
+                return {"response": brief, "sources": {"mode": "small_talk"}, "status": "success"}
+
             # ---- 0b) General anatomy / definition topics ----
             anatomy_terms = [
                 "anatomy","cell","cells","organelles","organelle","nucleus","mitochondria","mitochondrion",
                 "golgi","lysosome","lysosomes","endoplasmic reticulum","ribosome","skeletal","bone","muscle",
             ]
-            is_definition = any(t in q.lower() for t in ["what is","define","explain","tell about","overview of"]) or len(q.split()) <= 3
+            is_definition = any(t in q.lower() for t in ["what is","define","explain","tell about","overview of"])  # explicit only
             is_anatomy = any(t in q.lower() for t in anatomy_terms)
             if is_definition or is_anatomy:
                 # Pull a little RAG context first (BD pharmacy/textbook namespaces via llm handler)

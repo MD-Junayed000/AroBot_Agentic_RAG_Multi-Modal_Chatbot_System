@@ -53,8 +53,12 @@ OLLAMA_FAST_TEXT_MODEL = _get("OLLAMA_FAST_TEXT_MODEL")
 DEFAULT_REGION = _get("DEFAULT_REGION")
 
 # ---------- OCR ----------
-OCR_LANGUAGE = _get("OCR_LANGUAGE")
-OCR_CONFIDENCE_THRESHOLD = float(_get("OCR_CONFIDENCE_THRESHOLD"))
+# Sensible defaults so the app doesn't crash without .env values
+OCR_LANGUAGE = _get("OCR_LANGUAGE", "en")
+try:
+    OCR_CONFIDENCE_THRESHOLD = float(_get("OCR_CONFIDENCE_THRESHOLD", "0.5"))
+except Exception:
+    OCR_CONFIDENCE_THRESHOLD = 0.5
 
 # ---------- App ----------
 APP_HOST = _get("APP_HOST")

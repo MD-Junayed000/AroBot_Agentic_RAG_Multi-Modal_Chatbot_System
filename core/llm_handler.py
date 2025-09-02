@@ -197,7 +197,7 @@ class LLMHandler:
         except UnidentifiedImageError:
             return {"raw_text": "", "lines": [], "structured_items": [], "item_count": 0, "header": {}, "error": "not_an_image"}
 
-        pipe = OCRPipeline(lang=OCR_LANGUAGE)
+        pipe = OCRPipeline(lang=OCR_LANGUAGE or "en")
         lines, items, header = pipe.run_on_bytes(data)  # (lines, items, header)
         return {
             "raw_text": "\n".join(lines),
@@ -303,8 +303,16 @@ class LLMHandler:
 
     def greeting_response(self, text: str = "") -> str:
         return (
-            "Hi! I’m AroBot. I can chat normally and also help with medical questions, prescriptions, PDFs, and images. "
+            "Hi! I'm AroBot. I can chat normally and also help with medical questions, prescriptions, PDFs, and images. "
             "Ask me anything or upload a file to get started."
+        )
+
+    def about_response(self) -> str:
+        """Short capabilities + safety statement for meta questions about the assistant."""
+        return (
+            "I'm AroBot—an AI assistant for concise, evidence‑minded medical guidance. "
+            "I can: answer symptom/medicine questions, read prescription images (OCR), analyze PDFs, look up Bangladesh brands/prices, and do quick web-supported summaries. "
+            "I’m not a doctor; for real medical decisions, consult a licensed clinician—especially for urgent symptoms."
         )
 
     @traceable(name="medical_query")
@@ -372,6 +380,127 @@ class LLMHandler:
                 return json.loads(fixed)
             except Exception:
                 return None
+
+    # --------------------- Post-processing safeguards -------------------- #
+    @staticmethod
+    def _norm_text(s: str) -> str:
+        try:
+            s = (s or "").lower()
+            s = re.sub(r"[^a-z0-9\s.+/-]", " ", s)
+            s = " ".join(s.split())
+            return s
+        except Exception:
+            return s or ""
+
+    @staticmethod
+    def _best_line_score(lines: List[str], phrase: str) -> float:
+        from difflib import SequenceMatcher
+        p = LLMHandler._norm_text(phrase)
+        if not p:
+            return 0.0
+        scores: List[float] = []
+        for ln in lines:
+            lnn = LLMHandler._norm_text(ln)
+            if not lnn:
+                continue
+            # quick token presence boost
+            tok_hit = 0
+            tokens = [t for t in p.split() if len(t) >= 3]
+            if tokens:
+                tok_hit = sum(1 for t in tokens if t in lnn) / float(len(tokens))
+            r = SequenceMatcher(None, lnn, p).ratio()
+            scores.append(max(r, tok_hit))
+        return max(scores) if scores else 0.0
+
+    @staticmethod
+    def _present_in_ocr(ocr_text: str, target: str, threshold: float = 0.72) -> bool:
+        lines = [l for l in (ocr_text or "").splitlines() if l.strip()]
+        return LLMHandler._best_line_score(lines, target) >= threshold
+
+    @staticmethod
+    def _build_meds_from_ocr_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        meds: List[Dict[str, Any]] = []
+        for it in items or []:
+            if not isinstance(it, dict):
+                continue
+            raw = (it.get("raw") or "").strip()
+            if not raw:
+                continue
+            meds.append({
+                "name": raw,
+                "generic_suspected": "",
+                "form": "",
+                "route": "",
+                "dose": (f"{it.get('strength')} {it.get('unit')}".strip() if it.get('strength') else ""),
+                "dose_pattern": it.get("dose_pattern") or it.get("frequency") or "",
+                "frequency": it.get("frequency") or (it.get("dose_pattern") or ""),
+                "duration": it.get("duration") or "",
+                "quantity_or_count_mark": "",
+                "additional_instructions": "",
+                "confidence": 0.6,
+            })
+        return meds
+
+    @staticmethod
+    def _anchor_structured_to_ocr(structured: Dict[str, Any], ocr_blob: Dict[str, Any]) -> Dict[str, Any]:
+        """Ensure final fields are supported by OCR evidence. Drops inventions.
+
+        - Overwrites doctor/clinic with header hints if available.
+        - Removes medications that don't fuzzy-match any OCR line.
+        - If no meds survive and OCR items exist, build meds from OCR items.
+        """
+        if not structured:
+            return structured
+
+        ocr_text = (ocr_blob or {}).get("raw_text", "") or ""
+        lines = [l for l in ocr_text.splitlines() if l.strip()]
+        header = (ocr_blob or {}).get("header") or {}
+        items = (ocr_blob or {}).get("structured_items") or []
+
+        # Prefer header for doctor/clinic when present
+        if header.get("doctor"):
+            structured["doctor"] = header.get("doctor")
+        if header.get("clinic"):
+            structured["clinic"] = header.get("clinic")
+
+        # Validate top-level text fields when OCR text exists
+        for k in ["patient_name", "diagnosis_or_cc", "date"]:
+            v = structured.get(k)
+            if v and ocr_text:
+                if LLMHandler._best_line_score(lines, str(v)) < 0.55:
+                    structured[k] = ""
+
+        # Medication anchoring
+        meds_in = structured.get("medications") or []
+        meds_out: List[Dict[str, Any]] = []
+        for med in meds_in:
+            if not isinstance(med, dict):
+                continue
+            name = med.get("name") or ""
+            conf = 0.0
+            if name:
+                conf = LLMHandler._best_line_score(lines, name)
+            # Also try dose string as evidence
+            if conf < 0.72:
+                dose_str = " ".join([str(med.get("dose") or ""), str(med.get("dose_pattern") or "")]).strip()
+                if dose_str:
+                    conf = max(conf, LLMHandler._best_line_score(lines, dose_str))
+            if conf >= 0.72:
+                m2 = dict(med)
+                m2["confidence"] = max(float(med.get("confidence") or 0.0), round(conf, 2))
+                meds_out.append(m2)
+
+        if not meds_out and items:
+            meds_out = LLMHandler._build_meds_from_ocr_items(items)
+
+        structured["medications"] = meds_out
+        # Guardrail against common default hallucination trio
+        trio = {"paracetamol", "ibuprofen", "cetirizine"}
+        lower_meds = {LLMHandler._norm_text(m.get("name", "")) for m in meds_out}
+        if trio.issubset(lower_meds) and not any(LLMHandler._present_in_ocr(ocr_text, t) for t in trio):
+            structured["medications"] = []
+
+        return structured
 
     @staticmethod
     def _summarize_structured(obj: Dict[str, Any]) -> str:
@@ -457,7 +586,9 @@ class LLMHandler:
                 "diagnosis_or_cc, duration, medications[], notes.\n"
                 "- medications[] fields: name, generic_suspected, form, route, dose, dose_pattern, "
                 "frequency, duration, quantity_or_count_mark, additional_instructions, confidence.\n"
-                "- If unclear, leave fields empty. NEVER invent.\n"
+                "- Extract ONLY what is explicitly legible in the note. If unclear/illegible, leave empty.\n"
+                "- NEVER infer common default drugs (e.g., paracetamol/ibuprofen/cetirizine) or diagnoses.\n"
+                "- Keep confidence in 0..1 reflecting how clearly it appears.\n"
             )
 
             # ---- 3) OCR → JSON ----
@@ -504,11 +635,15 @@ class LLMHandler:
                     "status": "success",
                 }
 
-            # ---- 6) Summarize ----
+            # ---- 6) Anchor to OCR & summarize ----
+            try:
+                structured = self._anchor_structured_to_ocr(structured, ocr_blob)
+            except Exception as _:
+                pass
             summary = self._summarize_structured(structured)
             return {
                 "mode": used_mode,
-                "ocr_results": {"raw_text": ocr_text or ""},
+                "ocr_results": {"raw_text": ocr_text or "", **({"header": (ocr_blob or {}).get("header")} if isinstance(ocr_blob, dict) else {})},
                 "structured": structured,
                 "prescription_analysis": json.dumps(structured, ensure_ascii=False, indent=2),
                 "summary": summary,

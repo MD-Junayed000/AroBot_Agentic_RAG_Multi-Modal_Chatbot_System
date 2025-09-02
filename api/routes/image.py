@@ -55,8 +55,11 @@ async def analyze_image(
                 ocr_text = ((res.get("ocr_results") or {}).get("raw_text", "") or "").strip()
                 if ocr_text:
                     follow = _handler.answer_over_ocr_text(question, ocr_text)
-                    if follow:
+                    if follow and follow.strip() != "Can't find it in the OCR.":
                         chat_text = f"{chat_text}\n\n**Follow-up:** {follow}"
+                    elif follow:
+                        # Add a gentle, non-contradictory note when OCR lacks the answer
+                        chat_text = f"{chat_text}\n\n(Unable to locate that detail reliably in the OCR text.)"
 
             res["response"] = chat_text
 

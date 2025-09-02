@@ -66,12 +66,15 @@ class MultiModalProcessor:
                 raise ValueError("Unsupported image input type")
 
             # OCR
+            # NOTE: OCRPipeline returns (lines, items, header). We must keep
+            # the header so downstream logic (doctor/clinic hints) remains
+            # grounded in the actual letterhead instead of LLM guesses.
             if image_path:
-                lines, items = self.ocr_pipeline.run_on_image(image_path)
+                lines, items, header = self.ocr_pipeline.run_on_image(image_path)
             else:
                 with tempfile.NamedTemporaryFile(suffix=".jpg", delete=True) as tf:
                     image.save(tf.name, format="JPEG", quality=85, optimize=True)
-                    lines, items = self.ocr_pipeline.run_on_image(tf.name)
+                    lines, items, header = self.ocr_pipeline.run_on_image(tf.name)
 
             raw_text = "\n".join(lines)
             # defend against weird shapes
@@ -85,6 +88,7 @@ class MultiModalProcessor:
                 "lines": lines,
                 "structured_items": safe_items,
                 "item_count": len(safe_items),
+                "header": header or {},
                 "status": "success"
             }
         except Exception as e:
