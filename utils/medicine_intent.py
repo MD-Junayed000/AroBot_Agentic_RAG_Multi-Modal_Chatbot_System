@@ -77,6 +77,18 @@ _COMPANY_PAT = re.compile(
     re.I,
 )
 
+# Meta/about queries (route to about/capabilities)
+_META_PAT = re.compile(
+    r"(who are you|what are you|about you|about yourself|what can you do|capabilities|skills|ability|abilities|your experience|your experiences|experience|experiences|who made you|who created you|are you a doctor|expertise|what is your expertise)",
+    re.I,
+)
+
+# Policy/regulation (Bangladesh or general drug laws/regulators)
+_POLICY_PAT = re.compile(
+    r"\b(policy|act|regulation|rules|law|dgda|directorate\s+general\s+of\s+drug\s+administration)\b",
+    re.I,
+)
+
 # ------------------------------- Helpers --------------------------------- #
 
 def _pick_form(text: str) -> Optional[str]:
@@ -135,6 +147,8 @@ def detect_intent(text: str) -> Dict[str, bool | str | None]:
         "wants_brand_pack": bool(_BRAND_PACK_PAT.search(low)) or _is_bd_context(low),
         "looks_brandish": looks_brandish,
         "is_company": bool(_COMPANY_PAT.search(low)),
+        "is_meta": bool(_META_PAT.search(low)),
+        "is_policy": bool(_POLICY_PAT.search(low)),
         "wants_dose": bool(_DOSE_PAT.search(low)),
         "wants_indication": bool(_INDIC_PAT.search(low)),
         "wants_side_effects": bool(_SIDE_PAT.search(low)),

@@ -24,13 +24,13 @@
           sans-serif;
         background: #f7f7f8;
         color: #343541;
-        height: 100vh;
+        height: 100dvh;
         overflow: hidden;
       }
 
       .app-container {
         display: flex;
-        height: 100vh;
+        height: 100dvh;
       }
 
       /* Sidebar */
@@ -174,6 +174,7 @@
         display: flex;
         flex-direction: column;
         background: white;
+        min-width: 0;
       }
 
       .chat-header {
@@ -184,6 +185,18 @@
         align-items: center;
         justify-content: space-between;
       }
+      .header-left { display: flex; align-items: center; gap: 12px; }
+      .menu-btn {
+        display: none;
+        background: #f3f4f6;
+        border: 1px solid #e5e7eb;
+        color: #374151;
+        border-radius: 8px;
+        width: 36px; height: 36px;
+        align-items: center; justify-content: center;
+        cursor: pointer;
+      }
+      .menu-btn:hover { background: #e5e7eb; }
       .chat-title {
         font-size: 16px;
         font-weight: 600;
@@ -195,6 +208,7 @@
         overflow-y: auto;
         padding: 24px;
         background: #f7f7f8;
+        overscroll-behavior-y: contain;
       }
       .message {
         max-width: 800px;
@@ -233,7 +247,10 @@
         position: relative;
         line-height: 1.6;
         white-space: pre-wrap;
+        word-break: break-word;
+        overflow-wrap: anywhere;
       }
+      .message-content img { max-width: 100%; height: auto; border-radius: 8px; }
       .message.user .message-content {
         background: #f7f7f8;
         border-color: #d1d5db;
@@ -312,6 +329,10 @@
         padding: 24px;
         background: white;
         border-top: 1px solid #e5e5e7;
+        position: sticky;
+        bottom: 0;
+        z-index: 10;
+        padding-bottom: calc(24px + env(safe-area-inset-bottom));
       }
       .input-wrapper {
         max-width: 800px;
@@ -379,6 +400,22 @@
         gap: 8px;
         align-items: center;
       }
+      .image-mode {
+        display: none;
+        align-items: center;
+        gap: 6px;
+        margin-right: 8px;
+        color: #6b7280;
+        font-size: 12px;
+      }
+      .image-mode select {
+        border: 1px solid #d1d5db;
+        border-radius: 6px;
+        padding: 2px 6px;
+        font-size: 12px;
+        color: #374151;
+        background: #fff;
+      }
       .action-btn {
         width: 32px;
         height: 32px;
@@ -414,6 +451,13 @@
       }
 
       /* Responsive */
+      .sidebar-backdrop { display: none; }
+      .sidebar.open + .sidebar-backdrop { display: block; position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 900; }
+
+      @media (max-width: 1024px) {
+        .sidebar { width: 240px; }
+      }
+
       @media (max-width: 768px) {
         .sidebar {
           width: 260px;
@@ -434,6 +478,10 @@
         .input-container {
           padding: 16px;
         }
+        .menu-btn { display: inline-flex; }
+        .chat-title { font-size: 15px; }
+        .welcome-title { font-size: 24px; }
+        .capability-grid { grid-template-columns: 1fr; }
       }
 
       /* Welcome Screen */
@@ -600,12 +648,16 @@
           </button>
         </div>
       </div>
+      <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
 
       <!-- Main Content -->
       <div class="main-content">
         <div class="chat-header">
-          <div class="chat-title" id="chatTitle">
+          <div class="header-left">
+            <button class="menu-btn" id="sidebarToggle" aria-label="Toggle sidebar"><i class="fas fa-bars"></i></button>
+            <div class="chat-title" id="chatTitle">
             AroBot - AI Medical Assistant
+            </div>
           </div>
         </div>
 
@@ -681,6 +733,14 @@
                 placeholder="Ask about medical conditions, upload prescriptions, or any general question..."
                 rows="1"
               ></textarea>
+              <div class="image-mode" id="imageModeBlock">
+                <span>Image mode:</span>
+                <select id="imageMode">
+                  <option value="auto" selected>Auto</option>
+                  <option value="general">General</option>
+                  <option value="prescription">Prescription</option>
+                </select>
+              </div>
 
               <div class="input-actions">
                 <button
@@ -770,6 +830,7 @@
     <script>
       // ------------------ Global state ------------------
       let currentFile = null;
+      let imageMode = 'auto';
 
       // Local chat tab id for UI
       let currentChatId = null;
@@ -800,6 +861,29 @@
           if (e.key === "Enter" && !e.shiftKey) {
             e.preventDefault();
             sendMessage();
+          }
+        });
+        const imgModeSel = document.getElementById('imageMode');
+        if (imgModeSel) {
+          imgModeSel.addEventListener('change', function(){ imageMode = this.value || 'auto'; });
+        }
+        const toggleBtn = document.getElementById('sidebarToggle');
+        const sidebar = document.getElementById('sidebar');
+        const backdrop = document.getElementById('sidebarBackdrop');
+        if (toggleBtn) {
+          toggleBtn.addEventListener('click', function(){
+            sidebar.classList.toggle('open');
+            if (backdrop) backdrop.style.display = sidebar.classList.contains('open') ? 'block' : 'none';
+          });
+        }
+        if (backdrop) {
+          backdrop.addEventListener('click', function(){ sidebar.classList.remove('open'); this.style.display='none'; });
+        }
+        // Close sidebar when resizing to desktop
+        window.addEventListener('resize', function(){
+          if (window.innerWidth > 768) {
+            sidebar.classList.remove('open');
+            if (backdrop) backdrop.style.display = 'none';
           }
         });
       }
@@ -990,6 +1074,13 @@
           icon.style.color = "#0ea5e9";
         }
         document.getElementById("uploadPreview").classList.add("show");
+        if (type === 'image') {
+          var b = document.getElementById('imageModeBlock');
+          if (b) b.style.display = 'flex';
+        } else {
+          var b2 = document.getElementById('imageModeBlock');
+          if (b2) b2.style.display = 'none';
+        }
       }
 
       function removeFile() {
@@ -997,6 +1088,8 @@
         document.getElementById("uploadPreview").classList.remove("show");
         document.getElementById("imageInput").value = "";
         document.getElementById("pdfInput").value = "";
+        var b = document.getElementById('imageModeBlock');
+        if (b) b.style.display = 'none';
       }
 
       // ------------------ Chat UI helpers ------------------
@@ -1102,24 +1195,30 @@
           if (currentFile) {
             const formData = new FormData();
             formData.append("file", currentFile.file);
-            if (message) formData.append("question", message); // server reads 'question'
             formData.append("session_id", currentServerSessionId);
-            // Prescription vs general quick guess (same as before)
-            const guessType = (message || "")
-              .toLowerCase()
-              .match(/rx|prescription|doctor|pill|tablet/)
-              ? "prescription"
-              : "general";
-            // Use the compatibility endpoint that fans into the new fast OCR-first path
-            response = await fetch(
-              guessType === "prescription"
-                ? "/api/v1/prescription/upload"
-                : "/api/v1/image/analyze",
-              {
-                method: "POST",
-                body: formData,
+
+            if (currentFile.type === "pdf") {
+              // PDF analysis endpoint supports optional 'query' for Q&A; empty => summary
+              if (message) formData.append("query", message);
+              response = await fetch("/api/v1/pdf/analyze", { method: "POST", body: formData });
+            } else {
+              // Image: prescription vs general guess + pass image_type
+              let guessType = 'general';
+              if (imageMode === 'auto') {
+                guessType = (message || "")
+                  .toLowerCase()
+                  .match(/rx|prescription|doctor|pill|tablet|medicine|medicines|meds|drug|syrup|cap|capsule|tab|tablet/)
+                  ? "prescription"
+                  : "general";
+              } else {
+                guessType = imageMode;
               }
-            );
+              if (message) formData.append("question", message); // image endpoints read 'question'
+              formData.append("image_type", guessType);
+              if (guessType === "general") formData.append("use_clip", "true");
+              // Use the prescription-upload endpoint for both, passing image_type so the backend can route
+              response = await fetch("/api/v1/prescription/upload", { method: "POST", body: formData });
+            }
           } else {
             response = await fetch("/api/v1/chat", {
               method: "POST",

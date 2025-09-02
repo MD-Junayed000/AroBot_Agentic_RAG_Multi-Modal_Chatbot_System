@@ -28,7 +28,7 @@ def _load_pil_or_400(data: bytes) -> Image.Image:
 async def analyze_image(
     file: UploadFile = File(...),
     question: Optional[str] = Form(None),
-    image_type: Optional[str] = Form("prescription"),
+    image_type: Optional[str] = Form("general"),
     # Optional CLIP controls
     use_clip: Optional[bool] = Form(False),
     clip_query: Optional[str] = Form(None),
@@ -88,7 +88,13 @@ async def analyze_image(
 
         # Non-prescription images
         if question:
-            answer = _handler.generate_vision_response(question, image_data=data)
+            # Encourage label-aware, anatomy-friendly explanations when applicable
+            rich_prompt = (
+                "Look carefully at the image. If it is a labeled diagram (e.g., anatomy), list the main labeled parts "
+                "with one-line explanations for each. Otherwise, answer the user's question directly and concisely.\n\n"
+                f"QUESTION: {question}"
+            )
+            answer = _handler.generate_vision_response(rich_prompt, image_data=data)
             out = {"response": (answer or "I couldn't read enough to answer."), "status": "success", "filename": file.filename}
         else:
             brief = _handler.default_image_brief(data)
@@ -113,6 +119,18 @@ async def analyze_image(
             except Exception:
                 clip_block["error"] = "CLIP index unavailable or disabled."
             out["clip_matches"] = clip_block
+            try:
+                matches = (clip_block.get("by_image", {}) or {}).get("matches", [])
+                labels = []
+                for m in matches[:3]:
+                    md = m.get("metadata", {}) if isinstance(m, dict) else {}
+                    label = md.get("label") or md.get("caption") or md.get("title") or md.get("id") or ""
+                    if label:
+                        labels.append(str(label))
+                if labels:
+                    out["response"] = (out.get("response") or "") + "\n\nContext matches: " + "; ".join(labels)
+            except Exception:
+                pass
 
         return out
 

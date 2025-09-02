@@ -176,12 +176,7 @@ class MedicalAgent:
 
             # About/capabilities/experience questions (avoid triggering clinical chain)
             ql = q.lower().strip()
-            about_tokens = [
-                "who are you","what are you","about you","about yourself","what can you do","capabilities",
-                "skills","ability","abilities","your experience","your experiences","experience","experiences",
-                "who made you","who created you","are you a doctor","expertise","what is your expertise",
-            ]
-            if any(tok in ql for tok in about_tokens) or ql in {"about","help"}:
+            if intent.get("is_meta") or ql in {"about","help"}:
                 text = self.llm.about_response()
                 return {"response": text, "sources": {"mode": "about"}, "status": "success"}
 
@@ -206,7 +201,8 @@ class MedicalAgent:
             ]
             is_definition = any(t in q.lower() for t in ["what is","define","explain","tell about","overview of"])  # explicit only
             is_anatomy = any(t in q.lower() for t in anatomy_terms)
-            if is_definition or is_anatomy:
+            is_policy = bool(intent.get("is_policy"))
+            if is_definition or is_anatomy or is_policy:
                 # Pull a little RAG context first (BD pharmacy/textbook namespaces via llm handler)
                 context = self.llm._gather_rag_context(q)
                 text = self.llm.answer_general_knowledge(q, context=context, conversation_context=conversation_context)

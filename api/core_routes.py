@@ -179,6 +179,15 @@ def _looks_like_ocr_followup(q: str) -> bool:
     ql = q.lower()
     return any(k in ql for k in ["name", "doctor", "patient", "phone", "date", "clinic", "written", "what is the name"])
 
+def _looks_like_pdf_followup(q: str) -> bool:
+    ql = q.lower()
+    pdf_terms = [
+        "this pdf","these pdf","these pdfs","the pdf","that pdf","pdf document","pdf file",
+        "this document","that document","the document","attached pdf","uploaded pdf","the file","this file"
+    ]
+    question_hooks = ["what is in", "summarize", "explain", "contents", "table of contents", "chapter", "section", "overview"]
+    return any(t in ql for t in pdf_terms) or ("pdf" in ql and any(w in ql for w in ["what","summarize","explain","content","contains","about"]))
+
 
 # --------------------------------------------------------------------------------------
 # Weather helpers (Open-Meteo)
@@ -338,8 +347,8 @@ async def chat_with_bot(payload: ChatMessage):
             get_mcp().add_assistant_response(mcp_id, ans)
             return {"response": ans, "session_id": client_id, "sources": {"ocr": "last_image"}, "status": "success"}
 
-        # direct PDF follow-up (“this pdf”, “the pdf”, etc.) BEFORE heavy RAG
-        if sess_ctx.get("last_pdf") and any(k in lower_msg for k in ["this pdf", "the pdf", "that pdf", "pdf document"]):
+        # direct PDF follow-up BEFORE heavy RAG
+        if sess_ctx.get("last_pdf") and _looks_like_pdf_followup(lower_msg):
             ans = get_medical_agent().llm.answer_over_pdf_text(payload.message, sess_ctx["last_pdf"], conversation_context=transcript)
             add_to_conversation_memory(client_id, "Assistant", ans)
             get_mcp().add_assistant_response(mcp_id, ans)

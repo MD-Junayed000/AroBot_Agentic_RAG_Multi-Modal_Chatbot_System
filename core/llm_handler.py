@@ -226,7 +226,11 @@ class LLMHandler:
 
     def _select_namespaces(self, q: str) -> List[str]:
         ql = q.lower()
-        if any(k in ql for k in ["law", "policy", "act", "regulation", "dgda"]): return ["policy"]
+        if any(k in ql for k in ["law", "policy", "act", "regulation", "dgda", "directorate general of drug administration", "drug law", "drug rules"]):
+            return ["policy", "prescribing", "guidelines"]
+        if any(k in ql for k in ["bangladesh", " bd ", "bd:", "bd,", "bangla"]):
+            # Prefer BD-focused namespaces when user anchors to BD
+            return ["prescribing", "guidelines", "otc", "policy"]
         if any(k in ql for k in ["otc", "self care", "over the counter"]): return ["otc","prescribing","guidelines"]
         if any(k in ql for k in ["dose","dosing","indication","contraindication","interaction","pregnancy"]):
             return ["prescribing","guidelines","otc"]
@@ -507,33 +511,39 @@ class LLMHandler:
         if not obj:
             return "Couldn't confidently read the prescription."
         parts = []
+        # Patient and header first for clarity
+        if obj.get("patient_name") or obj.get("age_sex"):
+            parts.append("Patient: " + " ".join([s for s in [obj.get("patient_name"), obj.get("age_sex")] if s]).strip())
         if obj.get("doctor"):
             parts.append(f"Doctor: {obj['doctor']}")
         if obj.get("clinic"):
             parts.append(f"Clinic: {obj['clinic']}")
         if obj.get("date"):
             parts.append(f"Date: {obj['date']}")
-        if obj.get("patient_name"):
-            pn = obj["patient_name"]
-            if obj.get("age_sex"):
-                pn += f", {obj['age_sex']}"
-            parts.append(f"Patient: {pn}")
         if obj.get("diagnosis_or_cc"):
             parts.append(f"Dx/CC: {obj['diagnosis_or_cc']}")
+
         meds = obj.get("medications") or []
         if meds:
-            lines = []
-            for i, m in enumerate(meds, 1):
-                name = m.get("name") or "—"
+            lines: List[str] = []
+            idx = 1
+            for m in meds:
+                name = (m.get("name") or "").strip()
+                # Filter obvious OCR noise like single symbols or 1-2 letters
+                import re as _re
+                if len(_re.sub(r"[^A-Za-z]", "", name)) < 3:
+                    continue
                 dose = m.get("dose") or m.get("dose_pattern") or ""
                 extra = m.get("additional_instructions") or ""
                 frag = name
                 if dose:
-                    frag += f" — {dose}"
+                    frag += f" - {dose}"
                 if extra:
                     frag += f" ({extra})"
-                lines.append(f"{i}) {frag}")
-            parts.append("Meds:\n" + "\n".join(lines))
+                lines.append(f"{idx}) {frag}")
+                idx += 1
+            if lines:
+                parts.append("Meds:\n" + "\n".join(lines))
         if obj.get("notes"):
             parts.append(f"Notes: {obj['notes']}")
         return "\n".join(parts) if parts else "Parsed the prescription."
