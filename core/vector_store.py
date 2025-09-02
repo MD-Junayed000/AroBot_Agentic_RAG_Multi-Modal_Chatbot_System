@@ -51,18 +51,73 @@ class PineconeStore:
         self._index = self._pc.Index(self.index_name)
 
     # ----------- public API -----------
-    def upsert_texts(self, texts: List[str], metadatas: List[Dict[str, Any]], namespace: Optional[str] = None):
+    def upsert_texts(self, texts: List[str], metadatas: List[Dict[str, Any]], namespace: Optional[str] = None) -> int:
+        """Embed and upsert in batches; returns number of vectors upserted."""
         try:
             self._ensure_index()
         except Exception:
-            return  # silent if disabled/unavailable
-        vectors = []
-        for i, t in enumerate(texts):
-            vectors.append({"id": f"{self.index_name}-{i}", "values": self._embed_stub(t), "metadata": metadatas[i]})
+            return 0  # silent if disabled/unavailable
+
+        import uuid
+        batch_id = uuid.uuid4().hex[:8]
+        ns = namespace or ""
+        total = 0
+        batch_size = int(os.getenv("PINECONE_BATCH", "64"))
+        N = min(len(texts), len(metadatas))
+        for start in range(0, N, batch_size):
+            end = min(start + batch_size, N)
+            vectors: List[Dict[str, Any]] = []
+            for i in range(start, end):
+                t = texts[i]
+                md = dict(metadatas[i] or {})
+                # Ensure text is present in metadata for downstream retrieval patterns
+                if "text" not in md:
+                    md["text"] = t
+                vectors.append({
+                    "id": f"{self.index_name}-{batch_id}-{i}",
+                    "values": self._embed_stub(t),
+                    "metadata": md,
+                })
+            try:
+                resp = self._index.upsert(vectors=vectors, namespace=ns)
+                # Pinecone upsert can return a dict with 'upserted_count'
+                if isinstance(resp, dict) and "upserted_count" in resp:
+                    total += int(resp["upserted_count"]) or 0
+                else:
+                    total += len(vectors)
+            except Exception:
+                # Continue with remaining batches
+                pass
+        return total
+
+    # Utility used by CLIP image pipelines that already have vectors
+    def _safe_upsert(self, vectors: List[Dict[str, Any]], namespace: str = "") -> int:
+        """Upsert pre-built vectors with retries and chunking. Returns count."""
         try:
-            self._index.upsert(vectors=vectors, namespace=namespace or "")
+            self._ensure_index()
         except Exception:
-            pass
+            return 0
+
+        # pinecone 4MB limit per request – keep batches small
+        batch_size = int(os.getenv("PINECONE_BATCH", "32"))
+        total = 0
+        for start in range(0, len(vectors), batch_size):
+            chunk = vectors[start:start + batch_size]
+            try:
+                resp = self._index.upsert(vectors=chunk, namespace=namespace)
+                if isinstance(resp, dict) and "upserted_count" in resp:
+                    total += int(resp["upserted_count"]) or 0
+                else:
+                    total += len(chunk)
+            except Exception:
+                # last resort: single inserts
+                for v in chunk:
+                    try:
+                        self._index.upsert(vectors=[v], namespace=namespace)
+                        total += 1
+                    except Exception:
+                        pass
+        return total
 
     def query(self, text: str, top_k: int = 4, namespace: Optional[str] = None) -> List[str]:
         """

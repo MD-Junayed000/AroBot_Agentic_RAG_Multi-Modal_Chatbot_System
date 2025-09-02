@@ -1,7 +1,7 @@
 # utils/setup_knowledge_base.py
 """
 Setup script for knowledge base ingestion
-- PDF text  -> PINECONE_PDF_INDEX
+- PDF text  -> Indexed under namespace 'pdfs' in PINECONE_BD_PHARMACY_INDEX
 - Medicine  -> PINECONE_MEDICINE_INDEX (generic.csv + medicine.csv + dosage_form.csv + drug_class.csv + indication.csv + manufacturer.csv)
 - BD PDFs   -> via scripts/ingest_pdfs_bd.py (namespaced into arobot-bd-pharmacy)
 - Anatomy   -> via scripts/ingest_anatomy_images.py (CLIP -> arobot-clip)
@@ -22,8 +22,8 @@ from core.embeddings import Embedder  # ensure embedder importable
 from .data_ingestion import load_pdfs
 from config.env_config import (
     PINECONE_API_KEY,
-    PINECONE_PDF_INDEX,
     PINECONE_MEDICINE_INDEX,
+    PINECONE_BD_PHARMACY_INDEX,
     DATA_DIR,
     WEB_SCRAPE_DIR,
     EMBEDDING_DIMENSION,
@@ -92,11 +92,11 @@ def _dedupe_nonempty(seq: List[str]) -> List[str]:
 
 
 # --------------------------------------------------------------------------------------
-# PDF KB (unchanged)
+# PDF KB (now indexes into BD Pharmacy index under namespace 'pdfs')
 # --------------------------------------------------------------------------------------
 
 def setup_pdf_knowledge_base() -> bool:
-    """Setup PDF knowledge base in Pinecone from DATA_DIR/pdfs."""
+    """Setup PDF pages into the BD Pharmacy index under namespace 'pdfs'."""
     try:
         logger.info("📚 Setting up PDF knowledge base...")
         if not DATA_DIR.exists():
@@ -104,7 +104,7 @@ def setup_pdf_knowledge_base() -> bool:
             return False
 
         dim = EMBEDDING_DIMENSION or 384
-        pdf_store = PineconeStore(index_name=PINECONE_PDF_INDEX, dimension=dim)
+        pdf_store = PineconeStore(index_name=PINECONE_BD_PHARMACY_INDEX, dimension=dim)
 
         logger.info(f"Loading PDFs from: {DATA_DIR}")
         docs = load_pdfs(str(DATA_DIR))
@@ -123,9 +123,9 @@ def setup_pdf_knowledge_base() -> bool:
         logger.info(f"   • Total text: {total_chars:,} chars")
         logger.info(f"   • Estimated batches: {(len(texts) + 63) // 64}")
 
-        logger.info("🚀 Upserting PDF chunks to Pinecone...")
-        pdf_store.upsert_texts(texts, metadatas)
-        logger.info(f"✅ PDF KB indexed to: {PINECONE_PDF_INDEX}")
+        logger.info("🚀 Upserting PDF chunks to Pinecone (namespace='pdfs')...")
+        upserted = pdf_store.upsert_texts(texts, metadatas, namespace="pdfs")
+        logger.info(f"✅ PDF KB indexed to: {PINECONE_BD_PHARMACY_INDEX} (upserted={upserted})")
         return True
 
     except Exception as e:
@@ -457,9 +457,9 @@ def verify_knowledge_bases() -> bool:
 
         dim = EMBEDDING_DIMENSION or 384
 
-        pdf_store = PineconeStore(index_name=PINECONE_PDF_INDEX, dimension=dim)
-        pdf_hits = pdf_store.query("medical anatomy", top_k=3)
-        logger.info(f"PDF KB returned {len(pdf_hits)} results")
+        bd_store = PineconeStore(index_name=PINECONE_BD_PHARMACY_INDEX, dimension=dim)
+        pdf_hits = bd_store.query("hypertension guideline Bangladesh", top_k=3)
+        logger.info(f"BD/Guidelines KB returned {len(pdf_hits)} results")
 
         med_store = PineconeStore(index_name=PINECONE_MEDICINE_INDEX, dimension=dim)
         med_hits = med_store.query("diabetes medication dosage form manufacturer", top_k=3)
