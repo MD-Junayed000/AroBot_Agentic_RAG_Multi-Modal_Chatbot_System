@@ -179,6 +179,15 @@ def _looks_like_ocr_followup(q: str) -> bool:
     ql = q.lower()
     return any(k in ql for k in ["name", "doctor", "patient", "phone", "date", "clinic", "written", "what is the name"])
 
+def _looks_like_pdf_followup(q: str) -> bool:
+    ql = q.lower()
+    pdf_terms = [
+        "this pdf","these pdf","these pdfs","the pdf","that pdf","pdf document","pdf file",
+        "this document","that document","the document","attached pdf","uploaded pdf","the file","this file"
+    ]
+    question_hooks = ["what is in", "summarize", "explain", "contents", "table of contents", "chapter", "section", "overview"]
+    return any(t in ql for t in pdf_terms) or ("pdf" in ql and any(w in ql for w in ["what","summarize","explain","content","contains","about"]))
+
 
 # --------------------------------------------------------------------------------------
 # Weather helpers (Open-Meteo)
@@ -338,8 +347,8 @@ async def chat_with_bot(payload: ChatMessage):
             get_mcp().add_assistant_response(mcp_id, ans)
             return {"response": ans, "session_id": client_id, "sources": {"ocr": "last_image"}, "status": "success"}
 
-        # direct PDF follow-up (“this pdf”, “the pdf”, etc.) BEFORE heavy RAG
-        if sess_ctx.get("last_pdf") and any(k in lower_msg for k in ["this pdf", "the pdf", "that pdf", "pdf document"]):
+        # direct PDF follow-up BEFORE heavy RAG
+        if sess_ctx.get("last_pdf") and _looks_like_pdf_followup(lower_msg):
             ans = get_medical_agent().llm.answer_over_pdf_text(payload.message, sess_ctx["last_pdf"], conversation_context=transcript)
             add_to_conversation_memory(client_id, "Assistant", ans)
             get_mcp().add_assistant_response(mcp_id, ans)
@@ -360,6 +369,9 @@ async def chat_with_bot(payload: ChatMessage):
             extra_blocks.append(f"ATTACHED_PDF_TEXT:\n{sess_ctx['last_pdf']}")
         if sess_ctx.get("last_image_ocr") and "image" in lower_msg:
             extra_blocks.append(f"ATTACHED_IMAGE_OCR:\n{sess_ctx['last_image_ocr']}")
+        # If prior image topics exist (from CLIP matches), include them to aid follow-ups like “what is mitochondria?”
+        if sess_ctx.get("last_image_topics") and any(k in lower_msg for k in ["mitochond", "lysos", "nucleus", "golgi", "riboso", "anatomy", "cell", "organelles"]):
+            extra_blocks.append(f"IMAGE_TOPICS_HINTS: {sess_ctx['last_image_topics']}")
         augmented_context = transcript + ("\n\n" + "\n\n".join(extra_blocks) if extra_blocks else "")
 
         resp = get_medical_agent().handle_text_query(
@@ -430,6 +442,9 @@ async def upload_prescription(
             sess = get_mcp().memory.active_sessions.get(session_id, {})
             ocr_text = result.get("ocr_results", {}).get("raw_text", "")
             sess.setdefault("context", {})["last_image_ocr"] = (ocr_text or "")[:4000]
+            topics = "; ".join((result.get("image_context") or [])[:3])
+            if topics:
+                sess.setdefault("context", {})["last_image_topics"] = topics[:600]
             get_mcp().memory._save_session(session_id)
         except Exception:
             pass
@@ -565,9 +580,8 @@ async def upload_pdf(
         from langchain_community.document_loaders import PyPDFLoader
         from langchain.text_splitter import RecursiveCharacterTextSplitter
         from core.vector_store import PineconeStore
-        from config.env_config import PINECONE_PDF_INDEX
-
-        target_index = index_name or PINECONE_PDF_INDEX
+        # No default PINECONE_PDF_INDEX: use provided index_name or a generic default
+        target_index = index_name or "arobot-medical-pdf-default"
 
         loader = PyPDFLoader(str(tmp))
         documents = loader.load()
@@ -589,7 +603,7 @@ async def upload_pdf(
             )
 
         store = PineconeStore(index_name=target_index, dimension=384)
-        store.upsert_texts(texts, metas, namespace=namespace)
+        upserted = store.upsert_texts(texts, metas, namespace=namespace) or 0
 
         msg = (
             f"Successfully processed '{file.filename}' into index '{target_index}'"
@@ -602,7 +616,27 @@ async def upload_pdf(
         get_mcp().add_assistant_response(session_id, msg, "pdf_processing_response")
         add_to_conversation_memory(session_id, "Assistant", msg)
 
-        return {"message": msg, "session_id": session_id, "chunks_processed": len(texts), "status": "success"}
+        # Optionally fetch index stats to return vector counts
+        try:
+            from pinecone import Pinecone
+            pc = Pinecone(api_key=PINECONE_API_KEY)
+            stats = pc.Index(target_index).describe_index_stats()
+            total_vectors = (
+                getattr(stats, "total_vector_count", 0)
+                if hasattr(stats, "total_vector_count")
+                else (stats.get("total_vector_count", 0) if isinstance(stats, dict) else 0)
+            )
+        except Exception:
+            total_vectors = None
+
+        return {
+            "message": msg,
+            "session_id": session_id,
+            "chunks_processed": len(texts),
+            "vectors_upserted": upserted,
+            "total_vector_count": total_vectors,
+            "status": "success",
+        }
     finally:
         try:
             tmp.unlink(missing_ok=True)
@@ -660,14 +694,35 @@ async def create_vector_index(
 
         formatted = f"arobot-medical-pdf-{index_name.lower().replace('_','-').replace(' ','-')}"
         store = PineconeStore(index_name=formatted, dimension=384)
-        store.upsert_texts(texts, metas)
+        upserted = store.upsert_texts(texts, metas) or 0
+
+        # Collect stats to return counts for UI
+        try:
+            from pinecone import Pinecone
+            pc = Pinecone(api_key=PINECONE_API_KEY)
+            stats = pc.Index(formatted).describe_index_stats()
+            total_vectors = (
+                getattr(stats, "total_vector_count", 0)
+                if hasattr(stats, "total_vector_count")
+                else (stats.get("total_vector_count", 0) if isinstance(stats, dict) else 0)
+            )
+        except Exception:
+            total_vectors = None
 
         msg = f"Created vector index '{formatted}' with {len(texts)} chunks."
         get_mcp().add_user_message(session_id, f"Created index {formatted}", "vector_index_creation")
         get_mcp().add_assistant_response(session_id, msg, "vector_index_response")
         add_to_conversation_memory(session_id, "Assistant", msg)
 
-        return {"message": msg, "session_id": session_id, "index_name": formatted, "status": "success"}
+        return {
+            "message": msg,
+            "session_id": session_id,
+            "index_name": formatted,
+            "chunks_processed": len(texts),
+            "vectors_upserted": upserted,
+            "total_vector_count": total_vectors,
+            "status": "success",
+        }
     finally:
         try:
             tmp.unlink(missing_ok=True)

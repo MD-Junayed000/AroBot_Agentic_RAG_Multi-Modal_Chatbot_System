@@ -4,7 +4,7 @@ RAG Agent for retrieving and generating responses using knowledge base
 from typing import List, Dict, Any, Optional
 from core.vector_store import PineconeStore
 from core.llm_handler import LLMHandler
-from config.env_config import PINECONE_PDF_INDEX, PINECONE_MEDICINE_INDEX
+from config.env_config import PINECONE_MEDICINE_INDEX, PINECONE_BD_PHARMACY_INDEX, PINECONE_IMAGE_INDEX
 from langsmith import traceable
 import logging
 
@@ -15,8 +15,8 @@ class RAGAgent:
     
     def __init__(self):
         # Initialize vector stores for different knowledge bases
-        self.pdf_store = PineconeStore(
-            index_name=PINECONE_PDF_INDEX,
+        self.bd_pharmacy_store = PineconeStore(
+            index_name=PINECONE_BD_PHARMACY_INDEX,
             dimension=384
         )
         self.medicine_store = PineconeStore(
@@ -29,9 +29,9 @@ class RAGAgent:
     
     @traceable(name="retrieve_medical_knowledge")
     def retrieve_medical_knowledge(self, query: str, top_k: int = 5) -> List[str]:
-        """Retrieve relevant medical knowledge from PDF knowledge base"""
+        """Retrieve relevant medical knowledge from BD Pharmacy index (namespaced PDFs/guidelines)."""
         try:
-            results = self.pdf_store.query(query, top_k=top_k)
+            results = self.bd_pharmacy_store.query(query, top_k=top_k)
             return results
         except Exception as e:
             logger.error(f"Error retrieving medical knowledge: {e}")
@@ -185,8 +185,9 @@ class RAGAgent:
         try:
             # This would require additional methods in PineconeStore to get index stats
             return {
-                "pdf_index": PINECONE_PDF_INDEX,
                 "medicine_index": PINECONE_MEDICINE_INDEX,
+                "bd_pharmacy_index": PINECONE_BD_PHARMACY_INDEX,
+                "image_index": PINECONE_IMAGE_INDEX,
                 "status": "active"
             }
         except Exception as e:

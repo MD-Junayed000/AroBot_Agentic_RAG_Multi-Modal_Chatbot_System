@@ -15,6 +15,7 @@ import io
 import re
 import base64
 import logging
+import json
 from typing import List, Dict, Any, Optional, Tuple
 
 from PIL import Image, UnidentifiedImageError
@@ -30,7 +31,6 @@ from config.env_config import (
     OLLAMA_BASE_URL,
     OLLAMA_TEXT_MODEL,
     OLLAMA_VISION_MODEL,
-    PINECONE_PDF_INDEX,
     PINECONE_MEDICINE_INDEX,
     PINECONE_IMAGE_INDEX,
     PINECONE_BD_PHARMACY_INDEX,
@@ -133,13 +133,9 @@ class LLMHandler:
         # Vision client (LLaVA)
         self.client = ollama.Client(host=self.base_url)
 
-        # Optional RAG stores
+        # Optional RAG stores (PDF store removed; dynamic per-index uploads handled elsewhere)
         self.pdf_store: Optional[PineconeStore] = None
         self.medicine_store: Optional[PineconeStore] = None
-        try:
-            self.pdf_store = PineconeStore(index_name=PINECONE_PDF_INDEX, dimension=384)
-        except Exception as e:
-            logger.warning(f"PDF RAG store init failed: {e}")
         try:
             self.medicine_store = PineconeStore(index_name=PINECONE_MEDICINE_INDEX, dimension=384)
         except Exception as e:
@@ -201,7 +197,7 @@ class LLMHandler:
         except UnidentifiedImageError:
             return {"raw_text": "", "lines": [], "structured_items": [], "item_count": 0, "header": {}, "error": "not_an_image"}
 
-        pipe = OCRPipeline(lang=OCR_LANGUAGE)
+        pipe = OCRPipeline(lang=OCR_LANGUAGE or "en")
         lines, items, header = pipe.run_on_bytes(data)  # (lines, items, header)
         return {
             "raw_text": "\n".join(lines),
@@ -230,7 +226,11 @@ class LLMHandler:
 
     def _select_namespaces(self, q: str) -> List[str]:
         ql = q.lower()
-        if any(k in ql for k in ["law", "policy", "act", "regulation", "dgda"]): return ["policy"]
+        if any(k in ql for k in ["law", "policy", "act", "regulation", "dgda", "directorate general of drug administration", "drug law", "drug rules"]):
+            return ["policy", "prescribing", "guidelines"]
+        if any(k in ql for k in ["bangladesh", " bd ", "bd:", "bd,", "bangla"]):
+            # Prefer BD-focused namespaces when user anchors to BD
+            return ["prescribing", "guidelines", "otc", "policy"]
         if any(k in ql for k in ["otc", "self care", "over the counter"]): return ["otc","prescribing","guidelines"]
         if any(k in ql for k in ["dose","dosing","indication","contraindication","interaction","pregnancy"]):
             return ["prescribing","guidelines","otc"]
@@ -250,10 +250,7 @@ class LLMHandler:
                 except Exception as e:
                     logger.warning(f"BD pharmacy query failed ({ns}): {e}")
 
-        try:
-            if self.pdf_store: ctx.extend(self.pdf_store.query(query, top_k=2))
-        except Exception as e:
-            logger.warning(f"PDF RAG query failed: {e}")
+        # No default PDF index; PDFs are ingested into ad-hoc indexes or BD namespaces
 
         try:
             if self.medicine_store: ctx.extend(self.medicine_store.query(query, top_k=2))
@@ -288,6 +285,39 @@ class LLMHandler:
         if red:
             return text + "\n\n**If this is about a real person with urgent symptoms, seek emergency care immediately.**"
         return text
+
+    # ----------------------- General knowledge answers -------------------- #
+
+    def answer_general_knowledge(self, query: str, context: Optional[List[str]] = None, conversation_context: str = "") -> str:
+        """
+        Friendly encyclopedic answer for greetings/definitions/anatomy topics.
+        Keeps responses concise, avoids clinical dosing unless explicitly asked.
+        """
+        ctx_block = "\n---\n".join(context or []) if context else ""
+        prompt = (
+            "Answer the user's question clearly and directly. "
+            "If this is a definition or anatomy topic, include: what it is, key functions, and 2-3 high-yield facts. "
+            "If the question is broad (e.g., 'human anatomy'), provide a brief overview and end with three focused options the user can pick to go deeper. "
+            "Avoid drug dosing or brand names unless explicitly requested.\n\n"
+        )
+        if ctx_block:
+            prompt += f"CONTEXT\n---\n{ctx_block}\n---\n"
+        prompt += f"QUESTION: {query}\n\nAnswer:"
+        return self.generate_text_response(prompt, system_prompt=SYSTEM_GENERAL)
+
+    def greeting_response(self, text: str = "") -> str:
+        return (
+            "Hi! I'm AroBot. I can chat normally and also help with medical questions, prescriptions, PDFs, and images. "
+            "Ask me anything or upload a file to get started."
+        )
+
+    def about_response(self) -> str:
+        """Short capabilities + safety statement for meta questions about the assistant."""
+        return (
+            "I'm AroBot—an AI assistant for concise, evidence‑minded medical guidance. "
+            "I can: answer symptom/medicine questions, read prescription images (OCR), analyze PDFs, look up Bangladesh brands/prices, and do quick web-supported summaries. "
+            "I’m not a doctor; for real medical decisions, consult a licensed clinician—especially for urgent symptoms."
+        )
 
     @traceable(name="medical_query")
     def answer_medical_query(self, query: str, context: Optional[List[str]] = None, conversation_context: str = "") -> str:
@@ -355,38 +385,165 @@ class LLMHandler:
             except Exception:
                 return None
 
+    # --------------------- Post-processing safeguards -------------------- #
+    @staticmethod
+    def _norm_text(s: str) -> str:
+        try:
+            s = (s or "").lower()
+            s = re.sub(r"[^a-z0-9\s.+/-]", " ", s)
+            s = " ".join(s.split())
+            return s
+        except Exception:
+            return s or ""
+
+    @staticmethod
+    def _best_line_score(lines: List[str], phrase: str) -> float:
+        from difflib import SequenceMatcher
+        p = LLMHandler._norm_text(phrase)
+        if not p:
+            return 0.0
+        scores: List[float] = []
+        for ln in lines:
+            lnn = LLMHandler._norm_text(ln)
+            if not lnn:
+                continue
+            # quick token presence boost
+            tok_hit = 0
+            tokens = [t for t in p.split() if len(t) >= 3]
+            if tokens:
+                tok_hit = sum(1 for t in tokens if t in lnn) / float(len(tokens))
+            r = SequenceMatcher(None, lnn, p).ratio()
+            scores.append(max(r, tok_hit))
+        return max(scores) if scores else 0.0
+
+    @staticmethod
+    def _present_in_ocr(ocr_text: str, target: str, threshold: float = 0.72) -> bool:
+        lines = [l for l in (ocr_text or "").splitlines() if l.strip()]
+        return LLMHandler._best_line_score(lines, target) >= threshold
+
+    @staticmethod
+    def _build_meds_from_ocr_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        meds: List[Dict[str, Any]] = []
+        for it in items or []:
+            if not isinstance(it, dict):
+                continue
+            raw = (it.get("raw") or "").strip()
+            if not raw:
+                continue
+            meds.append({
+                "name": raw,
+                "generic_suspected": "",
+                "form": "",
+                "route": "",
+                "dose": (f"{it.get('strength')} {it.get('unit')}".strip() if it.get('strength') else ""),
+                "dose_pattern": it.get("dose_pattern") or it.get("frequency") or "",
+                "frequency": it.get("frequency") or (it.get("dose_pattern") or ""),
+                "duration": it.get("duration") or "",
+                "quantity_or_count_mark": "",
+                "additional_instructions": "",
+                "confidence": 0.6,
+            })
+        return meds
+
+    @staticmethod
+    def _anchor_structured_to_ocr(structured: Dict[str, Any], ocr_blob: Dict[str, Any]) -> Dict[str, Any]:
+        """Ensure final fields are supported by OCR evidence. Drops inventions.
+
+        - Overwrites doctor/clinic with header hints if available.
+        - Removes medications that don't fuzzy-match any OCR line.
+        - If no meds survive and OCR items exist, build meds from OCR items.
+        """
+        if not structured:
+            return structured
+
+        ocr_text = (ocr_blob or {}).get("raw_text", "") or ""
+        lines = [l for l in ocr_text.splitlines() if l.strip()]
+        header = (ocr_blob or {}).get("header") or {}
+        items = (ocr_blob or {}).get("structured_items") or []
+
+        # Prefer header for doctor/clinic when present
+        if header.get("doctor"):
+            structured["doctor"] = header.get("doctor")
+        if header.get("clinic"):
+            structured["clinic"] = header.get("clinic")
+
+        # Validate top-level text fields when OCR text exists
+        for k in ["patient_name", "diagnosis_or_cc", "date"]:
+            v = structured.get(k)
+            if v and ocr_text:
+                if LLMHandler._best_line_score(lines, str(v)) < 0.55:
+                    structured[k] = ""
+
+        # Medication anchoring
+        meds_in = structured.get("medications") or []
+        meds_out: List[Dict[str, Any]] = []
+        for med in meds_in:
+            if not isinstance(med, dict):
+                continue
+            name = med.get("name") or ""
+            conf = 0.0
+            if name:
+                conf = LLMHandler._best_line_score(lines, name)
+            # Also try dose string as evidence
+            if conf < 0.72:
+                dose_str = " ".join([str(med.get("dose") or ""), str(med.get("dose_pattern") or "")]).strip()
+                if dose_str:
+                    conf = max(conf, LLMHandler._best_line_score(lines, dose_str))
+            if conf >= 0.72:
+                m2 = dict(med)
+                m2["confidence"] = max(float(med.get("confidence") or 0.0), round(conf, 2))
+                meds_out.append(m2)
+
+        if not meds_out and items:
+            meds_out = LLMHandler._build_meds_from_ocr_items(items)
+
+        structured["medications"] = meds_out
+        # Guardrail against common default hallucination trio
+        trio = {"paracetamol", "ibuprofen", "cetirizine"}
+        lower_meds = {LLMHandler._norm_text(m.get("name", "")) for m in meds_out}
+        if trio.issubset(lower_meds) and not any(LLMHandler._present_in_ocr(ocr_text, t) for t in trio):
+            structured["medications"] = []
+
+        return structured
+
     @staticmethod
     def _summarize_structured(obj: Dict[str, Any]) -> str:
         if not obj:
             return "Couldn't confidently read the prescription."
         parts = []
+        # Patient and header first for clarity
+        if obj.get("patient_name") or obj.get("age_sex"):
+            parts.append("Patient: " + " ".join([s for s in [obj.get("patient_name"), obj.get("age_sex")] if s]).strip())
         if obj.get("doctor"):
             parts.append(f"Doctor: {obj['doctor']}")
         if obj.get("clinic"):
             parts.append(f"Clinic: {obj['clinic']}")
         if obj.get("date"):
             parts.append(f"Date: {obj['date']}")
-        if obj.get("patient_name"):
-            pn = obj["patient_name"]
-            if obj.get("age_sex"):
-                pn += f", {obj['age_sex']}"
-            parts.append(f"Patient: {pn}")
         if obj.get("diagnosis_or_cc"):
             parts.append(f"Dx/CC: {obj['diagnosis_or_cc']}")
+
         meds = obj.get("medications") or []
         if meds:
-            lines = []
-            for i, m in enumerate(meds, 1):
-                name = m.get("name") or "—"
+            lines: List[str] = []
+            idx = 1
+            for m in meds:
+                name = (m.get("name") or "").strip()
+                # Filter obvious OCR noise like single symbols or 1-2 letters
+                import re as _re
+                if len(_re.sub(r"[^A-Za-z]", "", name)) < 3:
+                    continue
                 dose = m.get("dose") or m.get("dose_pattern") or ""
                 extra = m.get("additional_instructions") or ""
                 frag = name
                 if dose:
-                    frag += f" — {dose}"
+                    frag += f" - {dose}"
                 if extra:
                     frag += f" ({extra})"
-                lines.append(f"{i}) {frag}")
-            parts.append("Meds:\n" + "\n".join(lines))
+                lines.append(f"{idx}) {frag}")
+                idx += 1
+            if lines:
+                parts.append("Meds:\n" + "\n".join(lines))
         if obj.get("notes"):
             parts.append(f"Notes: {obj['notes']}")
         return "\n".join(parts) if parts else "Parsed the prescription."
@@ -439,7 +596,9 @@ class LLMHandler:
                 "diagnosis_or_cc, duration, medications[], notes.\n"
                 "- medications[] fields: name, generic_suspected, form, route, dose, dose_pattern, "
                 "frequency, duration, quantity_or_count_mark, additional_instructions, confidence.\n"
-                "- If unclear, leave fields empty. NEVER invent.\n"
+                "- Extract ONLY what is explicitly legible in the note. If unclear/illegible, leave empty.\n"
+                "- NEVER infer common default drugs (e.g., paracetamol/ibuprofen/cetirizine) or diagnoses.\n"
+                "- Keep confidence in 0..1 reflecting how clearly it appears.\n"
             )
 
             # ---- 3) OCR → JSON ----
@@ -486,11 +645,15 @@ class LLMHandler:
                     "status": "success",
                 }
 
-            # ---- 6) Summarize ----
+            # ---- 6) Anchor to OCR & summarize ----
+            try:
+                structured = self._anchor_structured_to_ocr(structured, ocr_blob)
+            except Exception as _:
+                pass
             summary = self._summarize_structured(structured)
             return {
                 "mode": used_mode,
-                "ocr_results": {"raw_text": ocr_text or ""},
+                "ocr_results": {"raw_text": ocr_text or "", **({"header": (ocr_blob or {}).get("header")} if isinstance(ocr_blob, dict) else {})},
                 "structured": structured,
                 "prescription_analysis": json.dumps(structured, ensure_ascii=False, indent=2),
                 "summary": summary,

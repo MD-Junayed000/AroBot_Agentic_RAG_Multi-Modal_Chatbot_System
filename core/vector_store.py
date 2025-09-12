@@ -26,6 +26,7 @@ class PineconeStore:
         self._pc: Optional[Pinecone] = None
         self._index = None
         self._disabled = not PINECONE_ENABLE
+        self._embedder = None  # lazy
 
     # ----------- internal -----------
     def _ensure_client(self):
@@ -50,19 +51,96 @@ class PineconeStore:
             )
         self._index = self._pc.Index(self.index_name)
 
+    def _ensure_embedder(self):
+        """Try to initialize a sentence-transformers Embedder. Fallback to stub on failure."""
+        if self._embedder is not None:
+            return
+        try:
+            # Local import to avoid hard dependency if user doesn't install sentence-transformers
+            from core.embeddings import Embedder  # type: ignore
+            self._embedder = Embedder()
+        except Exception:
+            self._embedder = None
+
     # ----------- public API -----------
-    def upsert_texts(self, texts: List[str], metadatas: List[Dict[str, Any]], namespace: Optional[str] = None):
+    def upsert_texts(self, texts: List[str], metadatas: List[Dict[str, Any]], namespace: Optional[str] = None) -> int:
+        """Embed and upsert in batches; returns number of vectors upserted."""
         try:
             self._ensure_index()
         except Exception:
-            return  # silent if disabled/unavailable
-        vectors = []
-        for i, t in enumerate(texts):
-            vectors.append({"id": f"{self.index_name}-{i}", "values": self._embed_stub(t), "metadata": metadatas[i]})
+            return 0  # silent if disabled/unavailable
+
+        import uuid
+        batch_id = uuid.uuid4().hex[:8]
+        ns = namespace or ""
+        total = 0
+        batch_size = int(os.getenv("PINECONE_BATCH", "64"))
+        N = min(len(texts), len(metadatas))
+        # Try to load embedder once
+        self._ensure_embedder()
+        for start in range(0, N, batch_size):
+            end = min(start + batch_size, N)
+            vectors: List[Dict[str, Any]] = []
+            # Pre-compute embeddings for this batch
+            embeddings: List[List[float]]
+            if self._embedder is not None:
+                try:
+                    embeddings = self._embedder.embed(texts[start:end])  # type: ignore[attr-defined]
+                except Exception:
+                    embeddings = [self._embed_stub(texts[i]) for i in range(start, end)]
+            else:
+                embeddings = [self._embed_stub(texts[i]) for i in range(start, end)]
+            for i in range(start, end):
+                t = texts[i]
+                md = dict(metadatas[i] or {})
+                # Ensure text is present in metadata for downstream retrieval patterns
+                if "text" not in md:
+                    md["text"] = t
+                vectors.append({
+                    "id": f"{self.index_name}-{batch_id}-{i}",
+                    "values": embeddings[i - start],
+                    "metadata": md,
+                })
+            try:
+                resp = self._index.upsert(vectors=vectors, namespace=ns)
+                # Pinecone upsert can return a dict with 'upserted_count'
+                if isinstance(resp, dict) and "upserted_count" in resp:
+                    total += int(resp["upserted_count"]) or 0
+                else:
+                    total += len(vectors)
+            except Exception:
+                # Continue with remaining batches
+                pass
+        return total
+
+    # Utility used by CLIP image pipelines that already have vectors
+    def _safe_upsert(self, vectors: List[Dict[str, Any]], namespace: str = "") -> int:
+        """Upsert pre-built vectors with retries and chunking. Returns count."""
         try:
-            self._index.upsert(vectors=vectors, namespace=namespace or "")
+            self._ensure_index()
         except Exception:
-            pass
+            return 0
+
+        # pinecone 4MB limit per request – keep batches small
+        batch_size = int(os.getenv("PINECONE_BATCH", "32"))
+        total = 0
+        for start in range(0, len(vectors), batch_size):
+            chunk = vectors[start:start + batch_size]
+            try:
+                resp = self._index.upsert(vectors=chunk, namespace=namespace)
+                if isinstance(resp, dict) and "upserted_count" in resp:
+                    total += int(resp["upserted_count"]) or 0
+                else:
+                    total += len(chunk)
+            except Exception:
+                # last resort: single inserts
+                for v in chunk:
+                    try:
+                        self._index.upsert(vectors=[v], namespace=namespace)
+                        total += 1
+                    except Exception:
+                        pass
+        return total
 
     def query(self, text: str, top_k: int = 4, namespace: Optional[str] = None) -> List[str]:
         """
@@ -78,7 +156,15 @@ class PineconeStore:
 
         def _worker():
             try:
-                qv = self._embed_stub(text)
+                # Try real embedder; fallback to stub
+                self._ensure_embedder()
+                if self._embedder is not None:
+                    try:
+                        qv = self._embedder.embed([text])[0]  # type: ignore[attr-defined]
+                    except Exception:
+                        qv = self._embed_stub(text)
+                else:
+                    qv = self._embed_stub(text)
                 res = self._index.query(
                     vector=qv,
                     top_k=top_k,

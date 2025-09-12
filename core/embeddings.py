@@ -13,7 +13,7 @@ _DEFAULT_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 
 def _pick_device() -> str:
-    # Env overrides
+    """Select an embedding device with simple env overrides."""
     force = (os.getenv("EMBEDDINGS_DEVICE", "") or "").strip().lower()  # 'cpu' | 'cuda' | ''
     force_cpu = (os.getenv("AROBOT_FORCE_CPU", "") or "").strip().lower() in ("1", "true", "yes")
 
@@ -21,13 +21,7 @@ def _pick_device() -> str:
         return "cpu"
     if force in ("cpu", "cuda"):
         return force
-    # auto
     return "cuda" if torch.cuda.is_available() else "cpu"
-
-
-# at top
-import os
-...
 
 class Embedder:
     def __init__(self, model_name: str = "sentence-transformers/all-MiniLM-L6-v2"):
@@ -40,7 +34,7 @@ class Embedder:
         if force_dev in {"cpu", "cuda"}:
             device = force_dev
         else:
-            device = "cuda" if torch.cuda.is_available() else "cpu"
+            device = _pick_device()
 
         try:
             self.model = SentenceTransformer(model_name, device=device)
