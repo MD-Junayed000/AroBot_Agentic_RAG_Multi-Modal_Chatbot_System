@@ -11,11 +11,7 @@ from rapidfuzz import process, fuzz
 # NOTE: folder is "provider" (singular) in your tree
 from .provider.medex import search_brand_or_generic, parse_brand_page
 
-# Optional alias map (Bangladesh brand -> generic) to reduce ambiguity (e.g., Napa != Naproxen)
-try:
-    from utils.brand_aliases_bd import BRAND_TO_GENERIC_BD  # {"napa": "paracetamol", ...}
-except Exception:
-    BRAND_TO_GENERIC_BD = {}
+# Note: Brand alias mapping removed - using dynamic vector DB and web search instead
 
 DB_PATH = os.environ.get("PHARMA_DB", "data/pharma.db")
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -68,9 +64,6 @@ def _expand_terms(term: str) -> List[str]:
     """
     q = _norm(term)
     out = [q]
-    # alias: brand -> generic
-    if q in BRAND_TO_GENERIC_BD:
-        out.append(_norm(BRAND_TO_GENERIC_BD[q]))
     # Basic trick: if looks like "brand 500", also try without number
     base = re.sub(r"\b\d+(\.\d+)?\s*(mg|mcg|g|ml)\b", "", q).strip()
     if base and base not in out:

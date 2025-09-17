@@ -173,16 +173,16 @@ def detect_intent(text: str) -> Dict[str, bool | str | None]:
 # ------------------------------- Quick tests ------------------------------ #
 if __name__ == "__main__":
     samples = [
-        "price of Napa 500 tablet",
-        "Napa 500",
+        "price of paracetamol 500 tablet",
+        "paracetamol 500mg",
         "Give Bangladesh brand examples and typical retail pack sizes for paracetamol",
-        "Losectil 20 mg price in BD",
+        "omeprazole 20 mg price in BD",
         "Omeprazole 20mg capsule pack size?",
         "Paracetamol syrup 120 mg/5 mL bottle 100 mL",
         "What are side effects of azithromycin?",
         "Contraindications of Ibuprofen in pregnancy",
-        "Brufen 200",
-        "কত টাকা Napa 500 এর দাম?",
+        "ibuprofen 200mg",
+        "paracetamol price in Bangladesh",
         "How to take ibuprofen for fever?",
         "Paracetamol 500 mg dose?",
         "28F with fever 38.6°C, sore throat, dry cough. No dyspnea.",

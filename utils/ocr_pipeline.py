@@ -18,8 +18,10 @@ except Exception:
 try:
     # paddleocr versions differ on accepted kwargs; we will handle gracefully
     from paddleocr import PaddleOCR  # pip install "paddleocr>=2.7.0.3"
-except Exception:
+    _PADDLE_IMPORT_ERROR: Optional[Exception] = None
+except Exception as exc:  # capture actual reason so we can surface it later
     PaddleOCR = None
+    _PADDLE_IMPORT_ERROR = exc
 
 from unidecode import unidecode
 
@@ -153,7 +155,11 @@ class OCRPipeline:
             return
 
         if PaddleOCR is None:
-            raise RuntimeError("PaddleOCR is not installed. Please `pip install paddleocr`.")
+            detail = "PaddleOCR import failed"
+            if _PADDLE_IMPORT_ERROR is not None:
+                detail += f": {_PADDLE_IMPORT_ERROR}"
+            detail += ". Please install it with `pip install paddleocr` and ensure all system dependencies are available."
+            raise RuntimeError(detail)
 
         attempts = (
             {"lang": self.lang, "use_angle_cls": False, "show_log": False},
