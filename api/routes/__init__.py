@@ -1,6 +1,6 @@
 # api/routes/__init__.py
-"""Routers package init.
-Image router has been removed; agent/admin routers are imported directly in api.main.
+"""
+API routes package with clean versioning
 """
 
 __all__: list[str] = []

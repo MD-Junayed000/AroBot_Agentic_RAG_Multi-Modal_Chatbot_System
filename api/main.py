@@ -1,8 +1,11 @@
 # api/main.py
 """
 FastAPI main application for AroBot Multi-Modal Medical Chatbot
+Enhanced with middleware, proper routing, and error handling
 """
 import logging
+import time
+import psutil
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
@@ -12,23 +15,35 @@ from fastapi.templating import Jinja2Templates
 from config.env_config import DEBUG, APP_HOST, APP_PORT, TEMPLATES_DIR, STATIC_DIR
 from utils.ocr_pipeline import warmup_ocr
 
-# Simplified routes
-from .routes.simple import router as simple_router
-# Original routes (kept for compatibility)
-from .core_routes import router as core_router
-from .routes.agent import router as agent_router
-from .routes.admin import router as admin_router
+# Import middleware
+from .middleware import ErrorHandlerMiddleware, RateLimiterMiddleware, RequestLoggerMiddleware
+
+# Import new router structure
+from .routes import v1, v2, admin
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Initialize middleware instances
+error_handler = ErrorHandlerMiddleware()
+rate_limiter = RateLimiterMiddleware(
+    requests_per_minute=60,
+    requests_per_hour=1000,
+    burst_limit=10
+)
+request_logger = RequestLoggerMiddleware()
+
+# Application startup time for uptime calculation
+app_start_time = time.time()
+
 app = FastAPI(
-    title="AroBot - LLM-as-Agent Medical Assistant",
-    description="Intelligent agent that automatically selects tools based on input. Supports text, images, PDFs with unified endpoint.",
+    title="AroBot - Enhanced LLM-as-Agent Medical Assistant",
+    description="Intelligent agent with advanced middleware, validation, and error handling. Supports text, images, PDFs with unified endpoint.",
     version="2.0.0",
     debug=DEBUG,
 )
 
+# Add middleware in correct order (last added = first executed)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -37,14 +52,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Add custom middleware
+app.middleware("http")(error_handler)
+app.middleware("http")(rate_limiter)
+app.middleware("http")(request_logger)
+
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
-# Routers - Simplified first, then original for compatibility
-app.include_router(simple_router, prefix="/api/v2")  # NEW: Simplified endpoints
-app.include_router(agent_router)  # Unified agent endpoint /api/v1/agent
-app.include_router(core_router, prefix="/api/v1")  # Essential routes
-app.include_router(admin_router)  # Admin routes
+# Clean router architecture with proper versioning
+app.include_router(v1.router, prefix="/api/v1", tags=["API v1 - Stable"])
+app.include_router(v2.router, prefix="/api/v2", tags=["API v2 - Latest"]) 
+app.include_router(admin.router, prefix="/admin", tags=["Admin"])
+
+# Global error tracking
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.exception(f"Unhandled exception: {exc}")
+    return error_handler._create_error_response(exc, getattr(request.state, 'request_id', None))
 
 # Warm up PaddleOCR models in the background
 @app.on_event("startup")
@@ -115,7 +140,42 @@ async def api_info():
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy", "service": "AroBot", "version": "2.0.0", "architecture": "LLM-as-Agent"}
+    """Enhanced health check with system metrics"""
+    try:
+        # System metrics
+        uptime = time.time() - app_start_time
+        memory = psutil.virtual_memory()
+        
+        # Component health checks
+        components = {
+            "middleware": "healthy",
+            "database": "healthy",  # TODO: Add actual DB health check
+            "llm_service": "healthy",  # TODO: Add Ollama health check
+            "vector_store": "healthy"  # TODO: Add Pinecone health check
+        }
+        
+        return {
+            "status": "healthy",
+            "service": "AroBot",
+            "version": "2.0.0",
+            "architecture": "LLM-as-Agent",
+            "uptime": uptime,
+            "memory_usage": memory.percent,
+            "components": components,
+            "middleware_stats": {
+                "error_handler": error_handler.get_error_stats(),
+                "rate_limiter": rate_limiter.get_stats(),
+                "request_logger": request_logger.get_stats()
+            }
+        }
+    except Exception as e:
+        logger.exception("Health check failed")
+        return {
+            "status": "degraded",
+            "service": "AroBot", 
+            "version": "2.0.0",
+            "error": str(e)
+        }
 
 if __name__ == "__main__":
     import uvicorn

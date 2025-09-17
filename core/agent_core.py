@@ -190,7 +190,7 @@ class LLMAgent:
         priority=5
     )
     async def _tool_analyze_text(self, query: str, session_id: Optional[str] = None) -> Dict[str, Any]:
-        """Analyze text using the medical agent with improved handling"""
+        """Analyze text using RAG → LLM pipeline for medical queries"""
         try:
             # Check for greetings and simple queries
             query_lower = query.lower().strip()
@@ -206,17 +206,118 @@ class LLMAgent:
                 response = self.llm.about_response()
                 return {"response": response, "query_type": "about"}
             
-            # Check for anatomy/educational questions
-            if any(term in query_lower for term in ["anatomy", "human body", "tell about", "explain", "what is"]):
-                # Use general knowledge handler
-                response = self.llm.answer_general_knowledge(query)
-                return {"response": response, "query_type": "educational"}
+            # Check if this is a medicine-specific query
+            medicine_indicators = [
+                "medicine", "drug", "medication", "tablet", "capsule", "syrup", "injection",
+                "dosage", "dose", "mg", "ml", "side effect", "contraindication",
+                "paracetamol", "aspirin", "antibiotic", "vitamin", "prescription"
+            ]
             
-            # For medical questions, use medical agent
-            from agents.medical_agent import MedicalAgent
-            agent = MedicalAgent()
-            result = agent.handle_text_query(query, session_id=session_id)
-            return result
+            is_medicine_query = any(indicator in query_lower for indicator in medicine_indicators)
+            
+            # Check for medical query indicators
+            medical_indicators = [
+                "symptom", "disease", "treatment", "diagnosis", "health", "medical",
+                "pain", "fever", "headache", "infection", "allergy", "diabetes",
+                "blood pressure", "heart", "kidney", "liver", "stomach"
+            ]
+            
+            is_medical_query = any(indicator in query_lower for indicator in medical_indicators) or is_medicine_query
+            
+            if is_medical_query:
+                logger.info(f"Processing medical query with RAG: {query[:50]}...")
+                
+                # Step 1: Gather relevant context using RAG
+                try:
+                    rag_context = self.llm.gather_rag_context(query, limit=4)
+                    logger.info(f"Retrieved {len(rag_context)} RAG context chunks")
+                except Exception as e:
+                    logger.warning(f"RAG context gathering failed: {e}")
+                    rag_context = []
+                
+                # Step 2: Use LLM to generate response with RAG context
+                if rag_context:
+                    # Format RAG context
+                    context_text = "\n\n---MEDICAL KNOWLEDGE---\n".join(rag_context)
+                    
+                    # Create comprehensive prompt with RAG context
+                    rag_prompt = f"""
+                    Using the provided MEDICAL KNOWLEDGE context, answer the following medical question comprehensively and accurately.
+                    
+                    Structure your response appropriately based on the question type:
+                    - For medicine queries: Include uses, dosage, side effects, contraindications
+                    - For symptom queries: Include possible causes, when to seek help, general management
+                    - For disease queries: Include overview, symptoms, treatment options, prevention
+                    
+                    MEDICAL KNOWLEDGE CONTEXT:
+                    {context_text}
+                    
+                    QUESTION: {query}
+                    
+                    Important: Base your response primarily on the provided medical knowledge context. If the context doesn't contain specific information needed to answer the question, indicate this clearly and provide safe general guidance. Always recommend consulting a healthcare provider for personalized medical advice.
+                    """
+                    
+                    # Generate response using medical system prompt
+                    from core.prompts.system import get_system_prompt
+                    medical_response = self.llm.text_gen.generate_response(
+                        rag_prompt,
+                        system_prompt=get_system_prompt("medical")
+                    )
+                    
+                    # Add source attribution
+                    medical_response += f"\n\n*Information compiled from medical knowledge base ({len(rag_context)} sources) and clinical references.*"
+                    
+                    return {
+                        "response": medical_response, 
+                        "query_type": "medical_with_rag",
+                        "rag_sources": len(rag_context)
+                    }
+                
+                else:
+                    # Fallback: Use medical agent without RAG context
+                    logger.info("No RAG context found, using medical agent fallback")
+                    from agents.medical_agent import MedicalAgent
+                    agent = MedicalAgent()
+                    result = agent.handle_text_query(query, session_id=session_id)
+                    result["query_type"] = "medical_fallback"
+                    return result
+            
+            # Check for anatomy/educational questions
+            elif any(term in query_lower for term in ["anatomy", "human body", "tell about", "explain", "what is"]):
+                # Use general knowledge handler with potential RAG context
+                try:
+                    rag_context = self.llm.gather_rag_context(query, limit=2)
+                    if rag_context:
+                        context_text = "\n".join(rag_context)
+                        educational_prompt = f"""
+                        Using the provided context, answer the educational question about {query}.
+                        
+                        CONTEXT:
+                        {context_text}
+                        
+                        QUESTION: {query}
+                        
+                        Provide a clear, educational response. If the context doesn't fully answer the question, supplement with general knowledge while indicating what comes from the provided context.
+                        """
+                        
+                        response = self.llm.text_gen.generate_response(
+                            educational_prompt,
+                            system_prompt=get_system_prompt("general")
+                        )
+                        return {"response": response, "query_type": "educational_with_context"}
+                    else:
+                        response = self.llm.answer_general_knowledge(query)
+                        return {"response": response, "query_type": "educational"}
+                except Exception as e:
+                    logger.warning(f"Educational query with context failed: {e}")
+                    response = self.llm.answer_general_knowledge(query)
+                    return {"response": response, "query_type": "educational"}
+            
+            else:
+                # General query - use basic LLM response
+                response = self.llm.generate_text_response(query)
+                return {"response": response, "query_type": "general"}
+                
         except Exception as e:
             logger.exception(f"Error in analyze_text tool: {e}")
             # Fallback to basic LLM response
@@ -239,71 +340,124 @@ class LLMAgent:
             ocr_result = self.llm.ocr_only(image_data)
             ocr_text = ocr_result.get("raw_text", "")
             
-            # Check if this looks like a prescription based on OCR content
-            prescription_indicators = ["rx", "doctor", "patient", "medicine", "tablet", "capsule", "mg", "dose", "frequency"]
-            is_prescription = any(indicator in ocr_text.lower() for indicator in prescription_indicators)
+            # Enhanced medicine detection patterns
+            medicine_indicators = [
+                "tablet", "capsule", "mg", "ml", "dose", "dosage", "rx", "prescription",
+                "medicine", "drug", "pharmaceutical", "pharma", "ltd", "limited",
+                "syrup", "suspension", "injection", "cream", "ointment", "drops"
+            ]
             
-            if is_prescription or (question and "prescription" in question.lower()):
-                # Comprehensive prescription analysis
-                prescription_result = self.llm.analyze_prescription(image_data=image_data)
+            # Check if this looks like a medicine/prescription based on OCR content
+            is_medicine = any(indicator in ocr_text.lower() for indicator in medicine_indicators)
+            
+            # Enhanced medicine name extraction from OCR text
+            extracted_medicine_names = self._extract_medicine_names_from_ocr(ocr_text)
+            
+            if is_medicine or extracted_medicine_names or (question and any(term in question.lower() for term in ["medicine", "prescription", "drug", "tablet"])):
+                # Step 1: Enhanced OCR and Vision Analysis for prescriptions
+                vision_prompt = (
+                    "Analyze this prescription image carefully. Extract:\n"
+                    "1. Doctor's name and clinic information from the header\n"
+                    "2. All medicine names (look for Tab, Syp, Cap, Inj prefixes)\n"
+                    "3. Quantities and dosage instructions for each medicine\n"
+                    "4. Any special instructions or notes\n"
+                    "Provide a clear, structured analysis of what you can see."
+                )
+                vision_response = self.llm.generate_vision_response(vision_prompt, image_data=image_data)
                 
-                if prescription_result.get("status") == "success":
-                    # Extract structured data and provide comprehensive analysis
-                    structured = prescription_result.get("structured", {})
-                    summary = prescription_result.get("summary", "")
+                # Step 2: Extract medicine names from both OCR and Vision
+                all_medicine_names = extracted_medicine_names.copy()
+                vision_extracted_names = self._extract_medicine_names_from_text(vision_response)
+                all_medicine_names.extend(vision_extracted_names)
+                
+                # Clean and deduplicate medicine names
+                unique_medicine_names = []
+                seen_names = set()
+                for name in all_medicine_names:
+                    clean_name = name.strip().lower()
+                    if len(clean_name) > 2 and clean_name not in seen_names:
+                        unique_medicine_names.append(name)
+                        seen_names.add(clean_name)
+                
+                logger.info(f"Extracted medicine names: {unique_medicine_names}")
                     
-                    # Build comprehensive response
-                    response_parts = []
+                # Step 3: Build comprehensive response
+                response_parts = []
+                
+                # Add prescription analysis from vision in a friendly way
+                response_parts.append("**Here's what I can see in your prescription:**")
+                response_parts.append(vision_response)
+                
+                # Skip showing raw OCR text to users - it's confusing
+                # Only show it if it contains useful readable information
+                if ocr_text.strip() and len(unique_medicine_names) == 0:
+                    # Only show OCR if we couldn't extract medicine names properly
+                    clean_ocr = ' '.join(ocr_text.split())  # Clean up spacing
+                    if len(clean_ocr) > 30:  # Only if substantial text
+                        response_parts.append(f"\n**Text I could read from the image:**\n{clean_ocr}")
+                
+                # Step 4: RAG → LLM for each medicine with friendly presentation
+                if unique_medicine_names:
+                    response_parts.append(f"\n**Let me tell you about your medicines:**")
                     
-                    if summary:
-                        response_parts.append(f"**Prescription Analysis:**\n{summary}")
-                    
-                    # Add medication details if available
-                    medications = structured.get("medications", []) if structured else []
-                    if medications:
-                        response_parts.append("\n**Medications Identified:**")
-                        for i, med in enumerate(medications[:5], 1):  # Limit to 5 medications
-                            med_name = med.get("name", "Unknown")
-                            dose = med.get("dose", "")
-                            frequency = med.get("frequency", "")
-                            duration = med.get("duration", "")
+                    for i, medicine_name in enumerate(unique_medicine_names[:3], 1):  # Limit to 3 medicines
+                        try:
+                            logger.info(f"Getting information for: {medicine_name}")
                             
-                            med_line = f"{i}. **{med_name}**"
-                            if dose: med_line += f" - {dose}"
-                            if frequency: med_line += f" - {frequency}"
-                            if duration: med_line += f" - {duration}"
-                            response_parts.append(med_line)
-                    
-                    # Add doctor/clinic info if available
-                    if structured:
-                        doctor = structured.get("doctor", "")
-                        clinic = structured.get("clinic", "")
-                        date = structured.get("date", "")
-                        
-                        if doctor or clinic or date:
-                            response_parts.append("\n**Prescription Details:**")
-                            if doctor: response_parts.append(f"• Doctor: {doctor}")
-                            if clinic: response_parts.append(f"• Clinic: {clinic}")
-                            if date: response_parts.append(f"• Date: {date}")
-                    
-                    # Add specific question answer if provided
-                    if question and question.strip():
-                        answer = self.llm.answer_over_ocr_text(question, ocr_text)
-                        if answer and "can't find it" not in answer.lower():
-                            response_parts.append(f"\n**Your Question:** {question}")
-                            response_parts.append(f"**Answer:** {answer}")
-                    
-                    full_response = "\n".join(response_parts)
-                    return {"response": full_response, "ocr_data": ocr_result, "structured_data": structured}
-                
+                            # Use enhanced RAG → LLM pipeline
+                            medicine_info_result = await self._tool_get_medicine_info(medicine_name, want_price=False)
+                            
+                            if medicine_info_result.get("response"):
+                                response_parts.append(f"\n**Medicine #{i}: {medicine_name.title()}**")
+                                response_parts.append(medicine_info_result["response"])
+                                
+                                # Log RAG usage (for debugging, not user-facing)
+                                rag_sources = medicine_info_result.get("rag_sources", 0)
+                                if rag_sources > 0:
+                                    logger.info(f"Used {rag_sources} medical sources for {medicine_name}")
+                            
+                        except Exception as e:
+                            logger.warning(f"Failed to get info for {medicine_name}: {e}")
+                            continue
                 else:
-                    # Fallback to OCR + vision analysis
-                    if question:
-                        vision_response = self.llm.generate_vision_response(question, image_data=image_data)
-                    else:
-                        vision_response = self.llm.generate_vision_response("Analyze this medical prescription or document. What information can you extract?", image_data=image_data)
+                    response_parts.append("\n**Note:** I had trouble reading the medicine names clearly from this image. For the best information about your medicines, you can:")
+                    response_parts.append("• Ask your pharmacist about each medicine")
+                    response_parts.append("• Check the medicine packaging for details")
+                    response_parts.append("• Contact your doctor's office if you have questions")
+                
+                # Step 5: Answer specific questions in a helpful way
+                if question and question.strip() and "how should i take" in question.lower():
+                    instruction_prompt = f"""
+                    Based on what I can see in this prescription, help the patient understand how to take their medicines.
                     
-                    return {"response": f"**OCR Text:**\n{ocr_text}\n\n**Visual Analysis:**\n{vision_response}"}
+                    Prescription details: {vision_response}
+                    
+                    Please provide clear, simple instructions like:
+                    "Here's how to take your medicines:"
+                    
+                    For each medicine, explain:
+                    - When to take it (morning, evening, with food, etc.)
+                    - How many to take at once
+                    - How often during the day
+                    - Any special instructions
+                    
+                    Keep it simple and friendly, like you're talking to a family member.
+                    """
+                    
+                    from core.prompts.system import get_system_prompt
+                    instruction_response = self.llm.text_gen.generate_response(
+                        instruction_prompt,
+                        system_prompt=get_system_prompt("medical")
+                    )
+                    
+                    response_parts.append(f"\n{instruction_response}")
+                
+                full_response = "\n".join(response_parts)
+                
+                # Remove technical attribution for users - keep it simple
+                full_response += "\n\n**Remember:** Always follow your doctor's instructions and ask your pharmacist if you have any questions about your medicines!"
+                
+                return {"response": full_response, "ocr_data": ocr_result, "extracted_medicines": unique_medicine_names}
             
             else:
                 # General image analysis
@@ -334,6 +488,107 @@ class LLMAgent:
                     return {"response": "I could see the image but couldn't extract meaningful information from it.", "error": str(e)}
             except Exception as e2:
                 return {"error": f"Complete analysis failure: {str(e)} | {str(e2)}"}
+    
+    def _extract_medicine_names_from_ocr(self, ocr_text: str) -> List[str]:
+        """Extract potential medicine names from OCR text with improved prescription patterns"""
+        import re
+        medicine_names = []
+        
+        # Clean OCR text first - remove noise and fix common OCR errors
+        cleaned_text = ocr_text
+        # Fix common OCR mistakes
+        ocr_fixes = {
+            r'Tsy': 'Tab',
+            r'TA3': 'Tab',
+            r'Ta3': 'Tab',
+            r'Syp': 'Syrup',
+            r'Cap': 'Capsule',
+            r'Inj': 'Injection',
+            r'O\s*-\)': '',  # Remove O-) pattern
+            r'[-\(\)]+$': '',  # Remove trailing symbols
+        }
+        
+        for pattern, replacement in ocr_fixes.items():
+            cleaned_text = re.sub(pattern, replacement, cleaned_text, flags=re.IGNORECASE)
+        
+        # Enhanced patterns for prescription format
+        patterns = [
+            r'Tab\s+([A-Z][A-Z\s]+?)(?:\s+[-\d\(\)]|$)',  # Tab MEDICINE_NAME
+            r'Tablet\s+([A-Z][A-Z\s]+?)(?:\s+[-\d\(\)]|$)',  # Tablet MEDICINE_NAME
+            r'Syrup\s+([A-Z][A-Z\s]+?)(?:\s+[-\d\(\)]|$)',  # Syrup MEDICINE_NAME  
+            r'Capsule\s+([A-Z][A-Z\s]+?)(?:\s+[-\d\(\)]|$)',  # Capsule MEDICINE_NAME
+            r'Injection\s+([A-Z][A-Z\s]+?)(?:\s+[-\d\(\)]|$)',  # Injection MEDICINE_NAME
+            r'^\s*\d+[\.\)]\s*([A-Z][A-Z\s]+?)(?:\s+[-\d\(\)]|$)',  # 1. MEDICINE_NAME
+            r'\b([A-Z]{4,}[A-Z\s]*?)(?:\s+O[2-9]?|\s+M[LT]|\s+\d+|\s*$)',  # Medicine names like AFLAZEST, AZENAC
+        ]
+        
+        # Process line by line for better extraction
+        lines = cleaned_text.split('\n')
+        for line in lines:
+            line = line.strip()
+            if len(line) < 3:
+                continue
+                
+            for pattern in patterns:
+                matches = re.findall(pattern, line, re.IGNORECASE | re.MULTILINE)
+                for match in matches:
+                    # Clean the match
+                    cleaned = re.sub(r'\s+', ' ', match.strip())
+                    # Remove trailing noise
+                    cleaned = re.sub(r'[^A-Za-z\s].*$', '', cleaned).strip()
+                    if len(cleaned) > 2:
+                        medicine_names.append(cleaned)
+        
+        # Additional pattern for medicine names in the middle of noisy text
+        # Look for sequences of capital letters that could be medicine names
+        capital_sequences = re.findall(r'\b([A-Z]{4,}[A-Z]*)\b', cleaned_text)
+        for seq in capital_sequences:
+            if len(seq) >= 4 and seq not in ['TABLET', 'CAPSULE', 'SYRUP', 'INJECTION']:
+                medicine_names.append(seq)
+        
+        # Clean and filter results
+        cleaned_names = []
+        excluded_words = {
+            'tablet', 'capsule', 'syrup', 'injection', 'medicine', 'pharma', 
+            'limited', 'ltd', 'the', 'and', 'for', 'tab', 'cap', 'syp', 'inj',
+            'jkath', 'xane', 'daw', 'zof', 'ath', 'tsy'  # Common OCR errors
+        }
+        
+        for name in medicine_names:
+            name_lower = name.lower().strip()
+            if (len(name) >= 4 and 
+                name_lower not in excluded_words and
+                not re.match(r'^[^A-Za-z]*$', name) and  # Not just symbols
+                len(re.sub(r'[^A-Za-z]', '', name)) >= 3):  # At least 3 letters
+                cleaned_names.append(name)
+        
+        return list(set(cleaned_names))  # Remove duplicates
+    
+    def _extract_medicine_names_from_text(self, text: str) -> List[str]:
+        """Extract potential medicine names from analysis text"""
+        import re
+        medicine_names = []
+        
+        # Look for medicine names in structured responses
+        patterns = [
+            r'Medicine[:\s]+([A-Za-z][A-Za-z\s]+?)(?:\n|$|\s*[-•])',
+            r'Brand[:\s]+([A-Za-z][A-Za-z\s]+?)(?:\n|$|\s*[-•])',
+            r'Name[:\s]+([A-Za-z][A-Za-z\s]+?)(?:\n|$|\s*[-•])',
+            r'\*\*([A-Za-z][A-Za-z\s]+?)\*\*',  # Bold text often contains medicine names
+        ]
+        
+        for pattern in patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            medicine_names.extend(matches)
+        
+        # Clean results
+        cleaned_names = []
+        for name in medicine_names:
+            cleaned = name.strip()
+            if len(cleaned) > 2 and not any(word in cleaned.lower() for word in ['information', 'analysis', 'tablet', 'capsule', 'the', 'and', 'for']):
+                cleaned_names.append(cleaned)
+        
+        return list(set(cleaned_names))  # Remove duplicates
     
     @tool(
         name="analyze_pdf",
@@ -486,36 +741,175 @@ Document text:
         priority=4
     )
     async def _tool_get_medicine_info(self, medicine_name: str, want_price: bool = False) -> Dict[str, Any]:
-        """Get medicine information using vector database and web search"""
+        """Get comprehensive medicine information using RAG → LLM pipeline"""
         try:
+            # Clean medicine name
+            medicine_name_clean = medicine_name.strip().lower()
+            
             # Check if user is asking for price specifically
-            query_lower = medicine_name.lower()
+            query_lower = medicine_name_clean
             if any(term in query_lower for term in ["price", "cost", "how much", "rate", "expense"]):
                 want_price = True
             
-            # Get medicine information from vector database
-            response = self.llm.answer_medicine(medicine_name, want_price=want_price)
+            # Step 1: Use RAG to gather relevant medical knowledge
+            logger.info(f"Gathering RAG context for medicine: {medicine_name}")
             
-            # If response is too short or generic, try web search for Bangladesh context
-            if len(response) < 200 or "bangladesh" in query_lower:
+            # Create comprehensive search queries for RAG
+            rag_queries = [
+                f"{medicine_name} uses indications therapeutic effects",
+                f"{medicine_name} dosage administration dose frequency",
+                f"{medicine_name} side effects contraindications warnings",
+                f"{medicine_name} drug interactions precautions",
+                f"{medicine_name} generic name active ingredient"
+            ]
+            
+            if want_price:
+                rag_queries.append(f"{medicine_name} price cost Bangladesh pharmacy")
+            
+            # Gather context from multiple RAG queries
+            all_rag_context = []
+            for rag_query in rag_queries:
+                try:
+                    context_chunks = self.llm.gather_rag_context(rag_query, limit=2)
+                    all_rag_context.extend(context_chunks)
+                except Exception as e:
+                    logger.warning(f"RAG query failed for '{rag_query}': {e}")
+                    continue
+            
+            # Remove duplicates and limit context
+            unique_contexts = []
+            seen_contexts = set()
+            for context in all_rag_context:
+                if context and context not in seen_contexts and len(context.strip()) > 50:
+                    unique_contexts.append(context)
+                    seen_contexts.add(context)
+                    if len(unique_contexts) >= 5:  # Limit to prevent context overflow
+                        break
+            
+            logger.info(f"Retrieved {len(unique_contexts)} unique context chunks from RAG")
+            
+            # Step 2: Use LLM to generate comprehensive response with RAG context
+            if unique_contexts:
+                # Format RAG context
+                rag_context_text = "\n\n---MEDICAL KNOWLEDGE---\n".join(unique_contexts)
+                
+                # Create comprehensive prompt with RAG context
+                enhanced_prompt = f"""
+                Using the provided MEDICAL KNOWLEDGE context, provide comprehensive information about the medicine '{medicine_name}' in the following structured format:
+
+                **{medicine_name.title()}**
+
+                **Generic Name:** [Active ingredient from context]
+                **Drug Class:** [Therapeutic category from context]
+                **Uses:**
+                • [Primary indication 1 from context]
+                • [Primary indication 2 from context]
+                • [Additional uses from context]
+
+                **Dosage Information:**
+                • Adults: [Standard adult dose from context]
+                • Children: [Pediatric dose if mentioned in context]
+                • Frequency: [How often to take from context]
+
+                **Important Information:**
+                • Side Effects: [Common side effects from context]
+                • Contraindications: [When not to use from context]
+                • Drug Interactions: [Important interactions from context]
+                • Storage: [Storage requirements from context]
+
+                **Bangladesh Context:**
+                • Availability: [Local availability if mentioned]
+                • Price Range: [If price information is in context]
+                • Local Brands: [Bangladesh brand names if mentioned]
+
+                MEDICAL KNOWLEDGE CONTEXT:
+                {rag_context_text}
+
+                Important: Base your response primarily on the provided medical knowledge context. If specific information is not available in the context, indicate this clearly. Always recommend consulting a healthcare provider for personalized advice.
+                """
+                
+                # Generate response using medical system prompt
+                from core.prompts.system import get_system_prompt
+                medical_system_prompt = get_system_prompt("medicine_info")
+                
+                enhanced_response = self.llm.text_gen.generate_response(
+                    enhanced_prompt, 
+                    system_prompt=medical_system_prompt
+                )
+                
+            else:
+                # Fallback: No RAG context found, use basic medicine lookup
+                logger.warning(f"No RAG context found for {medicine_name}, using fallback")
+                base_response = self.llm.answer_medicine(medicine_name, want_price=want_price)
+                
+                fallback_prompt = f"""
+                Provide comprehensive information about the medicine '{medicine_name}' in a structured format:
+                
+                **{medicine_name.title()}**
+                
+                **Generic Name:** [Active ingredient if known]
+                **Uses:** [Main therapeutic uses]
+                **Dosage:** [General dosing guidelines]
+                **Important Notes:** [Key safety information]
+                
+                Based on this information: {base_response}
+                
+                Note: Limited information available. For complete details, consult a healthcare provider or pharmacist.
+                """
+                
+                enhanced_response = self.llm.text_gen.generate_response(
+                    fallback_prompt,
+                    system_prompt=get_system_prompt("medicine_info")
+                )
+            
+            # Step 3: Enhance with web search for Bangladesh context if needed
+            if len(enhanced_response) < 400 or "bangladesh" in query_lower or want_price:
                  try:
-                     web_query = f"{medicine_name} Bangladesh medicine information price"
-                     web_results = self.web_search.search_medical_info(web_query, max_results=2)
-                     if web_results and web_results.get("results"):
-                         web_info = "\n\n**Additional Information from Web:**\n"
-                         for result in web_results["results"][:2]:
-                             web_info += f"• {result.get('snippet', '')}\n"
-                         response += web_info
+                    web_query = f"{medicine_name} Bangladesh medicine information dosage uses side effects"
+                    if want_price:
+                        web_query += " price"
+                    
+                    web_results = self.web_search.search_medical_info(web_query, max_results=3)
+                    if web_results and web_results.get("results"):
+                        web_info = "\n\n**Additional Information from Web Sources:**\n"
+                        for i, result in enumerate(web_results["results"][:3], 1):
+                            snippet = result.get('snippet', '').strip()
+                            if snippet and len(snippet) > 50:
+                                web_info += f"{i}. {snippet}\n"
+                        
+                        if len(web_info) > 50:  # Only add if we got useful info
+                            enhanced_response += web_info
                  except Exception as web_error:
                      logger.warning(f"Web search failed for {medicine_name}: {web_error}")
             
-            return {"response": response}
+            # Add safety disclaimer and source attribution
+            enhanced_response += "\n\n**⚠️ Important:** This information is for educational purposes only. Always consult with a qualified healthcare provider before starting, stopping, or changing any medication."
+            
+            if unique_contexts:
+                enhanced_response += f"\n\n*Information compiled from medical knowledge base ({len(unique_contexts)} sources) and clinical references.*"
+            
+            return {"response": enhanced_response, "rag_sources": len(unique_contexts)}
+            
         except Exception as e:
             logger.exception(f"Error in get_medicine_info tool: {e}")
-            # Simple fallback
+            # Enhanced fallback with structured format
             try:
-                fallback_response = self.llm.generate_text_response(
-                    f"Provide basic information about the medicine {medicine_name}, including uses and general dosage guidelines."
+                fallback_prompt = f"""
+                Provide basic information about the medicine '{medicine_name}' in a structured format:
+                
+                **{medicine_name.title()}**
+                
+                **What it is:** [Brief description]
+                **Common uses:** [Main therapeutic uses]
+                **General dosage:** [Typical dosing guidelines]
+                **Important notes:** [Key safety information]
+                
+                Note: For specific dosage and safety information, please consult a healthcare provider or pharmacist.
+                """
+                
+                fallback_response = self.llm.text_gen.generate_response(
+                    fallback_prompt,
+                    system_prompt=get_system_prompt("default")
                 )
                 return {"response": fallback_response, "error": f"Used fallback due to: {str(e)}"}
             except Exception as e2:

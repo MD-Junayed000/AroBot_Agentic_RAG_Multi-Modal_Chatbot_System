@@ -73,3 +73,10 @@ retry-requests
 # Add these if you want enhanced performance/caching
 diskcache>=5.6.0
 orjson>=3.9.0
+
+# System monitoring and caching
+psutil>=5.9.0
+cachetools>=5.3.0
+
+# Enhanced async support
+aiofiles>=23.2.0
