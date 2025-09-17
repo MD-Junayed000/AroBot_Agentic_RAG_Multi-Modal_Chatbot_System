@@ -14,6 +14,7 @@ import inspect
 from core.llm_modular import ModularLLMHandler as LLMHandler
 from utils.web_search import WebSearchTool
 from mcp_server.mcp_handler import MCPHandler
+from langsmith import traceable
 
 logger = logging.getLogger(__name__)
 
@@ -189,6 +190,7 @@ class LLMAgent:
         category="medical",
         priority=5
     )
+    @traceable(name="analyze_text_tool")
     async def _tool_analyze_text(self, query: str, session_id: Optional[str] = None) -> Dict[str, Any]:
         """Analyze text using RAG → LLM pipeline for medical queries"""
         try:
@@ -333,6 +335,7 @@ class LLMAgent:
         category="medical",
         priority=4
     )
+    @traceable(name="analyze_image_tool")
     async def _tool_analyze_image(self, image_data: bytes, question: Optional[str] = None, session_id: Optional[str] = None) -> Dict[str, Any]:
         """Analyze image with comprehensive prescription and medical image processing"""
         try:
@@ -717,6 +720,7 @@ Document text:
         category="utility",
         priority=2
     )
+    @traceable(name="get_weather_tool")
     async def _tool_get_weather(self, query: str) -> Dict[str, Any]:
         """Get weather information"""
         try:
@@ -740,6 +744,7 @@ Document text:
         category="medical",
         priority=4
     )
+    @traceable(name="get_medicine_info_tool")
     async def _tool_get_medicine_info(self, medicine_name: str, want_price: bool = False) -> Dict[str, Any]:
         """Get comprehensive medicine information using RAG → LLM pipeline"""
         try:
@@ -921,6 +926,7 @@ Document text:
         category="utility",
         priority=1
     )
+    @traceable(name="access_memory_tool")
     async def _tool_access_memory(self, query: str, session_id: str) -> Dict[str, Any]:
         """Access conversation memory"""
         try:
@@ -936,6 +942,7 @@ Document text:
         category="utility",
         priority=2
     )
+    @traceable(name="web_search_tool")
     async def _tool_web_search(self, query: str, max_results: int = 3) -> Dict[str, Any]:
         """Search the web for information"""
         try:
@@ -984,6 +991,7 @@ Document text:
             "max_cache_size": 50
         }
     
+    @traceable(name="process_request")
     async def process_request(
         self,
         text_input: Optional[str] = None,
@@ -1138,6 +1146,7 @@ Document text:
         
         return hashlib.md5(cache_string.encode()).hexdigest()[:12]
     
+    @traceable(name="select_tools")
     async def _select_tools(self, input_description: str, conversation_context: str) -> List[Dict[str, Any]]:
         """Ask LLM to select which tools to use (with improved logic)"""
         
@@ -1285,6 +1294,7 @@ Selection:"""
         """Legacy fallback - use smart fallback instead"""
         return self._smart_fallback_selection(input_description)
     
+    @traceable(name="execute_tools")
     async def _execute_tools(
         self, 
         tool_selection: List[Dict[str, Any]], 
@@ -1336,6 +1346,7 @@ Selection:"""
         
         return results
     
+    @traceable(name="generate_final_response")
     async def _generate_final_response(self, results: List[Dict[str, Any]], original_query: Optional[str], conversation_context: str) -> str:
         """Generate final response based on tool results - improved with direct response forwarding"""
         

@@ -39,9 +39,9 @@ PINECONE_QUERY_TIMEOUT_S = float(os.getenv("PINECONE_QUERY_TIMEOUT_S", "3.5"))  
 PINECONE_ENABLE = os.getenv("PINECONE_ENABLE", "1").strip().lower() not in ("0", "false", "no", "")
 
 # ---------- LangSmith ----------
-LANGCHAIN_TRACING_V2 = _get_bool("LANGCHAIN_TRACING_V2")
-LANGCHAIN_ENDPOINT = _get("LANGCHAIN_ENDPOINT")
-LANGCHAIN_PROJECT = _get("LANGCHAIN_PROJECT")
+LANGCHAIN_TRACING_V2 = _get_bool("LANGCHAIN_TRACING_V2", "true")
+LANGCHAIN_ENDPOINT = _get("LANGCHAIN_ENDPOINT", "https://api.smith.langchain.com")
+LANGCHAIN_PROJECT = _get("LANGCHAIN_PROJECT", "AroBot")
 
 # ---------- Ollama ----------
 OLLAMA_BASE_URL = _get("OLLAMA_BASE_URL")

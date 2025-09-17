@@ -18,6 +18,7 @@ from .utils.text import (
     truncate_text
 )
 from utils.ocr_pipeline import OCRPipeline
+from langsmith import traceable
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,7 @@ class ModularLLMHandler:
     
     # ==================== TEXT GENERATION ====================
     
+    @traceable(name="generate_text_response")
     def generate_text_response(self, prompt: str, system_prompt: Optional[str] = None) -> str:
         """Generate text response"""
         return self.text_gen.generate_response(prompt, system_prompt)
@@ -48,6 +50,7 @@ class ModularLLMHandler:
     
     # ==================== VISION PROCESSING ====================
     
+    @traceable(name="generate_vision_response")
     def generate_vision_response(self, prompt: str, image_path: Optional[str] = None, 
                                 image_data: Optional[bytes] = None) -> str:
         """Analyze image with vision model"""
@@ -141,6 +144,7 @@ class ModularLLMHandler:
     
     # ==================== MEDICAL Q&A ====================
     
+    @traceable(name="answer_medical_query")
     def answer_medical_query(self, query: str, context: Optional[List[str]] = None, 
                            conversation_context: str = "") -> str:
         """Answer medical questions with RAG context"""
@@ -207,6 +211,7 @@ class ModularLLMHandler:
     
     # ==================== BANGLADESH MEDICINES ====================
     
+    @traceable(name="answer_medicine")
     def answer_medicine(self, query: str, want_price: bool = False) -> str:
         """Get Bangladesh medicine information"""
         try:
@@ -252,6 +257,7 @@ class ModularLLMHandler:
     
     # ==================== SMART ROUTING ====================
     
+    @traceable(name="smart_response")
     def smart_response(self, query: str, image_data: Optional[bytes] = None) -> str:
         """Smart routing based on query type"""
         try:

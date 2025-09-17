@@ -34,7 +34,7 @@ OCR_CONFIDENCE_THRESHOLD=0.5
 
 # Optional: LangSmith for tracing
 LANGSMITH_API_KEY=your_langsmith_key_here
-LANGCHAIN_TRACING_V2=false
+LANGCHAIN_TRACING_V2=true
 LANGCHAIN_ENDPOINT=https://api.smith.langchain.com
 LANGCHAIN_PROJECT=AroBot
 

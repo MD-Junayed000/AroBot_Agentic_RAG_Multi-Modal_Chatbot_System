@@ -14,6 +14,7 @@ from fastapi.templating import Jinja2Templates
 
 from config.env_config import DEBUG, APP_HOST, APP_PORT, TEMPLATES_DIR, STATIC_DIR
 from utils.ocr_pipeline import warmup_ocr
+from core.langsmith_config import initialize_langsmith
 
 # Import middleware
 from .middleware import ErrorHandlerMiddleware, RateLimiterMiddleware, RequestLoggerMiddleware
@@ -71,10 +72,20 @@ async def global_exception_handler(request: Request, exc: Exception):
     logger.exception(f"Unhandled exception: {exc}")
     return error_handler._create_error_response(exc, getattr(request.state, 'request_id', None))
 
-# Warm up PaddleOCR models in the background
+# Initialize services on startup
 @app.on_event("startup")
-async def _warmup():
+async def startup_event():
+    """Initialize services on startup"""
+    # Initialize LangSmith tracing
+    langsmith_initialized = initialize_langsmith()
+    if langsmith_initialized:
+        logger.info("✅ LangSmith tracing initialized successfully")
+    else:
+        logger.warning("⚠️ LangSmith tracing not available")
+    
+    # Warm up OCR models
     warmup_ocr(lang="en")
+    
     # Ensure a favicon exists to prevent 404s from browsers requesting /favicon.ico
     try:
         favicon_path = STATIC_DIR / "favicon.ico"
