@@ -28,10 +28,10 @@ if not LANGSMITH_API_KEY:
 # ---------- Pinecone ----------
 PINECONE_CLOUD = _get("PINECONE_CLOUD", "aws")
 PINECONE_REGION = _get("PINECONE_REGION", "us-east-1")
-PINECONE_PDF_INDEX = _get("PINECONE_PDF_INDEX")
-PINECONE_MEDICINE_INDEX = _get("PINECONE_MEDICINE_INDEX")
-PINECONE_BD_PHARMACY_INDEX = _get("PINECONE_BD_PHARMACY_INDEX")
-PINECONE_IMAGE_INDEX = _get("PINECONE_IMAGE_INDEX")
+# Removed PINECONE_PDF_INDEX — PDFs use ad-hoc indexes created from UI
+PINECONE_MEDICINE_INDEX = _get("PINECONE_MEDICINE_INDEX", "arobot-medicine-data")
+PINECONE_BD_PHARMACY_INDEX = _get("PINECONE_BD_PHARMACY_INDEX", "arobot-bd-pharmacy")
+PINECONE_IMAGE_INDEX = _get("PINECONE_IMAGE_INDEX", "arobot-clip")
 EMBEDDING_DIMENSION = int(_get("EMBEDDING_DIMENSION", "384"))
 
 # Pinecone hardening knobs
@@ -53,8 +53,12 @@ OLLAMA_FAST_TEXT_MODEL = _get("OLLAMA_FAST_TEXT_MODEL")
 DEFAULT_REGION = _get("DEFAULT_REGION")
 
 # ---------- OCR ----------
-OCR_LANGUAGE = _get("OCR_LANGUAGE")
-OCR_CONFIDENCE_THRESHOLD = float(_get("OCR_CONFIDENCE_THRESHOLD"))
+# Sensible defaults so the app doesn't crash without .env values
+OCR_LANGUAGE = _get("OCR_LANGUAGE", "en")
+try:
+    OCR_CONFIDENCE_THRESHOLD = float(_get("OCR_CONFIDENCE_THRESHOLD", "0.5"))
+except Exception:
+    OCR_CONFIDENCE_THRESHOLD = 0.5
 
 # ---------- App ----------
 APP_HOST = _get("APP_HOST")

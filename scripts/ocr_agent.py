@@ -4,7 +4,7 @@ OCR Agent for processing prescription images
 from typing import Dict, Any, Union
 from PIL import Image
 from core.multimodal_processor import MultiModalProcessor
-from core.llm_handler import LLMHandler
+from core.llm_modular import ModularLLMHandler as LLMHandler
 from langsmith import traceable
 import logging
 

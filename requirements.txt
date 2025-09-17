@@ -29,14 +29,15 @@ langsmith>=0.2.3
 langchain-ollama>=0.1.0
 
 # Pinecone + embeddings
-pinecone>=6,<7
+pinecone
 sentence-transformers==2.2.2
 
 # Document processing
 pypdf>=5.6.1
-pymupdf>=1.24.10
+pymupdf<1.21.0
 pytesseract>=0.3.10
-protobuf==3.20.2
+protobuf<3.21
+
 
 # Ollama client
 ollama>=0.3.1
@@ -47,10 +48,9 @@ ddgs>=2.5.1
 # MCP Server
 mcp>=1.0.0
 
-# Multimodal processing (Torch/Transformers)
-# (Install your CUDA-specific torch/torchvision manually as you already do)
+# Multimodal processing (Transformers optional)
+# (Install your CUDA-specific torch/torchvision manually if needed; we avoid pinning here to prevent Windows DLL issues)
 transformers==4.24.0
-torch>=1.12.0
 
 # Hugging Face hub pinned for ST 2.2.2 + Transformers 4.24.0
 huggingface-hub>=0.10,<0.14
@@ -68,3 +68,8 @@ git+https://github.com/openai/CLIP.git
 openmeteo-requests
 requests-cache
 retry-requests
+
+
+# Add these if you want enhanced performance/caching
+diskcache>=5.6.0
+orjson>=3.9.0

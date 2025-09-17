@@ -34,6 +34,42 @@ def load_pdfs(folder: str) -> List[Dict]:
                 docs.append({"text": t.strip(), "meta": {"id": f"{p.stem}_p{i}", "source": str(p), "page": i}})
     return docs
 
+def ingest_pdf_to_knowledge_base(pdf_path: str, namespace: str = "general", filename_override: str | None = None) -> Dict:
+    """Ingest a single PDF into Pinecone under the given namespace/index.
+
+    - Extracts text per page (OCR fallback for scanned pages)
+    - Upserts to Pinecone with minimal metadata
+    - Creates the index on-the-fly if missing
+    """
+    p = Path(pdf_path)
+    if not p.exists():
+        return {"status": "error", "error": f"PDF not found: {pdf_path}"}
+
+    try:
+        doc = fitz.open(str(p))
+        texts: list[str] = []
+        metas: list[Dict] = []
+        for i in range(len(doc)):
+            t = _page_text_or_ocr(doc[i])
+            if t and t.strip():
+                texts.append(t.strip())
+                metas.append({
+                    "id": f"{p.stem}_p{i}",
+                    "source": str(p),
+                    "filename": filename_override or p.name,
+                    "page": i,
+                    "text": t.strip(),
+                })
+
+        store = PineconeStore(index_name=namespace, dimension=384)
+        # Ensure index exists
+        store.create_index(namespace, dimension=384, metric="cosine")
+        upserted = store.upsert_texts(texts, metas, namespace=namespace)
+
+        return {"status": "success", "chunks": upserted, "pages": len(texts)}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
 if __name__ == "__main__":
     store = PineconeStore(dimension=384)
     folder = "knowledge/pdfs"

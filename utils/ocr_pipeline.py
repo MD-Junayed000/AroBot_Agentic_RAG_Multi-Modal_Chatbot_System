@@ -18,8 +18,10 @@ except Exception:
 try:
     # paddleocr versions differ on accepted kwargs; we will handle gracefully
     from paddleocr import PaddleOCR  # pip install "paddleocr>=2.7.0.3"
-except Exception:
+    _PADDLE_IMPORT_ERROR: Optional[Exception] = None
+except Exception as exc:  # capture actual reason so we can surface it later
     PaddleOCR = None
+    _PADDLE_IMPORT_ERROR = exc
 
 from unidecode import unidecode
 
@@ -38,6 +40,8 @@ ABBREV = {
 FREQ_PAT = r"(once daily|twice daily|thrice daily|four times daily|as needed|at bedtime|immediately)"
 DUR_PAT  = r"(\d+\s*(day|days|week|weeks|month|months))"
 STR_PAT  = r"(\d{1,4})\s*(mg|mcg|g|ml)"
+# e.g., 1-0-1, 0-1-0, 1-1-1, 1 x 5 days
+DOSE_PATTERN_RE = re.compile(r"\b\d(?:\s*[-xX]\s*\d){1,3}\b")
 
 DOCTOR_RX_RE = re.compile(r"\b(Dr\.?\s*[A-Z][\w.\-' ]{1,40})\b", re.IGNORECASE)
 
@@ -111,7 +115,9 @@ def parse_line(line: str) -> Dict[str, Any]:
         strength, unit = m.group(1), m.group(2)
     freq     = (re.search(FREQ_PAT, L).group(1) if re.search(FREQ_PAT, L) else None)
     duration = (re.search(DUR_PAT,  L).group(1) if re.search(DUR_PAT,  L) else None)
-    return {"raw": line.strip(), "strength": strength, "unit": unit, "frequency": freq, "duration": duration}
+    dose_pat = DOSE_PATTERN_RE.search(line)
+    dose_pattern = dose_pat.group(0) if dose_pat else None
+    return {"raw": line.strip(), "strength": strength, "unit": unit, "frequency": freq, "duration": duration, "dose_pattern": dose_pattern}
 
 def extract_header_entities(lines: List[str]) -> Dict[str, Any]:
     """Pull doctor/clinic hints from the top 10 lines (letterhead & headers)."""
@@ -149,7 +155,11 @@ class OCRPipeline:
             return
 
         if PaddleOCR is None:
-            raise RuntimeError("PaddleOCR is not installed. Please `pip install paddleocr`.")
+            detail = "PaddleOCR import failed"
+            if _PADDLE_IMPORT_ERROR is not None:
+                detail += f": {_PADDLE_IMPORT_ERROR}"
+            detail += ". Please install it with `pip install paddleocr` and ensure all system dependencies are available."
+            raise RuntimeError(detail)
 
         attempts = (
             {"lang": self.lang, "use_angle_cls": False, "show_log": False},

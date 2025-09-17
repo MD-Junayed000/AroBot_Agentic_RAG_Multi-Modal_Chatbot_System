@@ -11,9 +11,9 @@ if __name__ == "__main__":
     host = APP_HOST or "127.0.0.1"
     port = int(APP_PORT or 8000)
     print("🏥 Starting AroBot Multi-Modal Medical Chatbot System...")
-    print(f"🌐 UI:       http://{host}:{port}/chat")
-    print(f"📖 OpenAPI:  http://{host}:{port}/docs")
-    print(f"🔍 Health:   http://{host}:{port}/health")
+    print(f"🌐 UI:       http://localhost:{port}/chat")
+    print(f"📖 OpenAPI:  http://localhost:{port}/docs")
+    print(f"🔍 Health:   http://localhost:{port}/health")
     print("\n⚡ Starting server...\n")
     # Use module:app target (prevents double import of app object)
     uvicorn.run(
