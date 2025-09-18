@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Depends
 from typing import Optional
 from api.schemas.responses import ChatResponse, AgentResponse
 from core.agent_core import LLMAgent
+from fastapi.responses import RedirectResponse
 
 router = APIRouter()
 
@@ -107,14 +108,63 @@ async def legacy_prescription_endpoint(
             detail=f"Failed to process prescription: {str(e)}"
         )
 
-@router.post("/pdf/analyze", deprecated=True)
-async def legacy_pdf_endpoint():
-    """Legacy PDF endpoint - redirects to new agent endpoint"""
-    raise HTTPException(
-        status_code=301,
-        detail={
-            "message": "This endpoint is deprecated. Please use /api/v1/agent instead.",
-            "new_endpoint": "/api/v1/agent", 
-            "migration_guide": "https://docs.arobot.com/migration"
-        }
+@router.post("/pdf/analyze", response_model=AgentResponse, deprecated=True)
+async def legacy_pdf_endpoint(
+    file: UploadFile = File(...),
+    question: Optional[str] = Form(None),
+    session_id: Optional[str] = Form(None),
+    agent: LLMAgent = Depends(get_agent)
+):
+    # Validate content type
+    if file.content_type != "application/pdf":
+        raise HTTPException(status_code=400, detail="File must be a PDF")
+
+    # Read and validate size (50MB limit)
+    file_content = await file.read()
+    if not file_content:
+        raise HTTPException(status_code=400, detail="Empty file")
+    if len(file_content) > 50 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File too large. Maximum 50MB allowed.")
+
+    # Process with agent
+    result = await agent.process_request(
+        text_input=question,
+        image_data=None,
+        pdf_data=file_content,
+        session_id=session_id
+    )
+
+    # Map to API schema
+    from api.schemas.responses import SourceInfo, ToolInfo
+    tool_infos = []
+    if result.sources and 'tools' in result.sources:
+        for tool in result.sources['tools']:
+            tool_infos.append(ToolInfo(
+                name=tool.get('name', ''),
+                description=tool.get('description', ''),
+                category=tool.get('category', 'general'),
+                priority=tool.get('priority', 1),
+                execution_time=tool.get('execution_time'),
+                confidence=tool.get('confidence')
+            ))
+
+    source_info = SourceInfo(
+        tools=tool_infos,
+        llm_agent=result.sources.get('llm_agent', True) if result.sources else True,
+        knowledge_base=result.sources.get('knowledge_base', 0) if result.sources else 0,
+        web_search=result.sources.get('web_search', 0) if result.sources else 0,
+        cached=result.sources.get('cached', False) if result.sources else False
+    )
+
+    return AgentResponse(
+        response=result.response,
+        session_id=result.session_id or session_id or "unknown",
+        tools_used=result.tools_used,
+        sources=source_info,
+        status=result.status,
+        confidence=getattr(result, 'confidence', None),
+        response_time=getattr(result, 'response_time', None),
+        token_count=getattr(result, 'token_count', None),
+        agent_type="llm_agent",
+        model_version="2.0.0"
     ) 
