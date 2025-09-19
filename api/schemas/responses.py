@@ -52,9 +52,12 @@ class AgentResponse(BaseModel):
     
     confidence: Optional[float] = Field(
         None,
-        ge=0.0,
-        le=1.0,
-        description="Response confidence score"
+        description="Overall confidence score (0-1)"
+    )
+    
+    metadata: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Additional metadata including classification info, reasoning, etc."
     )
     
     response_time: Optional[float] = Field(

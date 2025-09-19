@@ -1202,22 +1202,91 @@
               if (message) formData.append("query", message);
               response = await fetch("/api/v1/pdf/analyze", { method: "POST", body: formData });
             } else {
-              // Image: prescription vs general guess + pass image_type
-              let guessType = 'general';
-              if (imageMode === 'auto') {
-                guessType = (message || "")
-                  .toLowerCase()
-                  .match(/rx|prescription|doctor|pill|tablet|medicine|medicines|meds|drug|syrup|cap|capsule|tab|tablet/)
-                  ? "prescription"
-                  : "general";
-              } else {
-                guessType = imageMode;
+              // Enhanced image classification logic
+              let imageTypeHint = 'general';
+              let confidence = 0.5;
+              
+              // Analyze filename for hints
+              const fileName = currentFile.file.name.toLowerCase();
+              if (fileName.includes('prescription') || fileName.includes('rx')) {
+                imageTypeHint = 'prescription';
+                confidence = 0.8;
+              } else if (fileName.includes('package') || fileName.includes('bottle') || fileName.includes('strip')) {
+                imageTypeHint = 'medicine_package';
+                confidence = 0.7;
+              } else if (fileName.includes('lab') || fileName.includes('report') || fileName.includes('test')) {
+                imageTypeHint = 'lab_results';
+                confidence = 0.7;
+              } else if (fileName.includes('xray') || fileName.includes('ct') || fileName.includes('mri')) {
+                imageTypeHint = 'medical_scan';
+                confidence = 0.8;
+              } else if (fileName.includes('anatomy') || fileName.includes('diagram')) {
+                imageTypeHint = 'anatomy_diagram';
+                confidence = 0.7;
               }
-              if (message) formData.append("question", message); // image endpoints read 'question'
-              formData.append("image_type", guessType);
-              if (guessType === "general") formData.append("use_clip", "true");
-              // Use the prescription-upload endpoint for both, passing image_type so the backend can route
-              response = await fetch("/api/v1/prescription/upload", { method: "POST", body: formData });
+              
+              // Analyze message for additional context
+              if (message) {
+                const messageLower = message.toLowerCase();
+                
+                // Prescription-related queries
+                if (messageLower.match(/prescription|rx|doctor|pill|tablet|medicine|medicines|meds|drug|syrup|cap|capsule|tab|dosage|dose/)) {
+                  if (messageLower.includes('package') || messageLower.includes('bottle')) {
+                    imageTypeHint = 'medicine_package';
+                    confidence = Math.max(confidence, 0.8);
+                  } else {
+                    imageTypeHint = 'prescription';
+                    confidence = Math.max(confidence, 0.9);
+                  }
+                }
+                
+                // Lab results queries
+                else if (messageLower.match(/lab|test|blood|urine|report|results|normal|abnormal/)) {
+                  imageTypeHint = 'lab_results';
+                  confidence = Math.max(confidence, 0.8);
+                }
+                
+                // Anatomy/educational queries
+                else if (messageLower.match(/anatomy|organ|muscle|bone|body|system|diagram|explain|what is this part/)) {
+                  imageTypeHint = 'anatomy_diagram';
+                  confidence = Math.max(confidence, 0.7);
+                }
+                
+                // Medical scan queries
+                else if (messageLower.match(/xray|x-ray|ct|mri|scan|ultrasound|imaging/)) {
+                  imageTypeHint = 'medical_scan';
+                  confidence = Math.max(confidence, 0.8);
+                }
+                
+                // Medicine identification queries
+                else if (messageLower.match(/identify|what medicine|what drug|name of|brand/)) {
+                  imageTypeHint = 'medicine_package';
+                  confidence = Math.max(confidence, 0.7);
+                }
+              }
+              
+              // Override with imageMode if user explicitly selected
+              if (imageMode !== 'auto') {
+                imageTypeHint = imageMode;
+                confidence = 0.9;
+              }
+              
+              // Append enhanced parameters
+              if (message) formData.append("message", message);
+              formData.append("image_type", imageTypeHint);
+              formData.append("confidence_hint", confidence.toString());
+              
+              // Add context for better classification
+              const contextInfo = {
+                filename: currentFile.file.name,
+                filesize: currentFile.file.size,
+                user_mode: imageMode,
+                timestamp: new Date().toISOString()
+              };
+              formData.append("context_info", JSON.stringify(contextInfo));
+              
+              // Use the unified agent endpoint for better processing
+              response = await fetch("/api/v1/agent", { method: "POST", body: formData });
             }
           } else {
             response = await fetch("/api/v1/chat", {

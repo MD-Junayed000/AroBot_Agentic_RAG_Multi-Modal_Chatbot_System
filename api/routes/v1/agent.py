@@ -7,6 +7,10 @@ from typing import Optional
 import time
 import io
 from PIL import Image, UnidentifiedImageError
+import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 from api.schemas.responses import AgentResponse, ToolListResponse, ToolInfo
 from api.middleware.error_handler import handle_agent_errors, AgentProcessingError, ToolExecutionError
@@ -25,7 +29,6 @@ def get_agent() -> LLMAgent:
     return _agent
 
 @router.post("/agent", response_model=AgentResponse)
-@handle_agent_errors
 async def unified_agent_endpoint(
     # Text input
     message: Optional[str] = Form(None),
@@ -33,6 +36,10 @@ async def unified_agent_endpoint(
     file: Optional[UploadFile] = File(None),
     # Session management
     session_id: Optional[str] = Form(None),
+    # Enhanced image classification parameters
+    image_type: Optional[str] = Form(None),
+    confidence_hint: Optional[float] = Form(None),
+    context_info: Optional[str] = Form(None),
     # Optional parameters
     file_type: Optional[str] = Form(None),
     use_web_search: bool = Form(False),
@@ -42,49 +49,34 @@ async def unified_agent_endpoint(
     agent: LLMAgent = Depends(get_agent)
 ):
     """
-    Enhanced Unified Agent Endpoint with validation and error handling
+    Enhanced Unified Agent Endpoint with Advanced Image Classification
     
-    Accepts:
-    - Text message (chat, questions, queries) 
-    - Image files (prescriptions, diagrams, photos)
-    - PDF files (documents, papers, manuals)
-    - Any combination of the above
-    
-    The LLM agent analyzes input and automatically selects appropriate tools.
+    Supports:
+    - Intelligent image classification with confidence scoring
+    - Context-aware processing based on user intent
+    - Multiple image categories (prescription, medicine package, lab results, etc.)
+    - Enhanced metadata for better classification accuracy
     """
-    start_time = time.time()
-    
     try:
-        # Input validation
+        # Validate input
         if not message and not file:
             raise HTTPException(
                 status_code=400, 
                 detail="Either message or file must be provided"
             )
         
-        # Validate message length
-        if message and len(message.strip()) > 10000:
-            raise HTTPException(
-                status_code=400,
-                detail="Message too long. Maximum 10,000 characters allowed."
-            )
-        
-        # Validate parameters
-        if max_tokens < 50 or max_tokens > 2000:
-            raise HTTPException(
-                status_code=400,
-                detail="max_tokens must be between 50 and 2000"
-            )
-        
-        if temperature < 0.0 or temperature > 1.0:
-            raise HTTPException(
-                status_code=400,
-                detail="temperature must be between 0.0 and 1.0"
-            )
-        
-        # Process file uploads
+        # Initialize variables
         image_data = None
         pdf_data = None
+        enhanced_context = {}
+        
+        # Parse context information if provided
+        if context_info:
+            try:
+                enhanced_context = json.loads(context_info)
+            except json.JSONDecodeError:
+                logger.warning("Invalid context_info JSON provided")
+                enhanced_context = {}
         
         if file:
             # Validate file size (50MB limit)
@@ -121,6 +113,16 @@ async def unified_agent_endpoint(
                 try:
                     Image.open(io.BytesIO(file_content))
                     image_data = file_content
+                    
+                    # Add image classification hints to enhanced context
+                    enhanced_context.update({
+                        'image_type_hint': image_type,
+                        'confidence_hint': confidence_hint,
+                        'file_size': len(file_content),
+                        'content_type': file.content_type,
+                        'filename': file.filename
+                    })
+                    
                 except UnidentifiedImageError:
                     raise HTTPException(
                         status_code=400, 
@@ -135,16 +137,26 @@ async def unified_agent_endpoint(
                     )
                 pdf_data = file_content
         
+        # Create enhanced message with context if available
+        enhanced_message = message
+        if enhanced_context and message:
+            # Add context hints to help with classification
+            context_hints = []
+            if enhanced_context.get('image_type_hint'):
+                context_hints.append(f"[Image type hint: {enhanced_context['image_type_hint']}]")
+            if enhanced_context.get('confidence_hint'):
+                context_hints.append(f"[Confidence: {enhanced_context['confidence_hint']:.1f}]")
+            
+            if context_hints:
+                enhanced_message = f"{message} {' '.join(context_hints)}"
+        
         # Process with enhanced agent
         result = await agent.process_request(
-            text_input=message,
+            text_input=enhanced_message,
             image_data=image_data,
             pdf_data=pdf_data,
             session_id=session_id
         )
-        
-        # Calculate response time
-        response_time = time.time() - start_time
         
         # Transform core AgentResponse to API AgentResponse
         from api.schemas.responses import SourceInfo, ToolInfo
@@ -171,26 +183,44 @@ async def unified_agent_endpoint(
             cached=result.sources.get('cached', False) if result.sources else False
         )
         
-        # Return enhanced response
+        # Add classification information to metadata if available
+        metadata = {}
+        if hasattr(result, 'classification'):
+            metadata['classification'] = result.classification
+        if hasattr(result, 'confidence'):
+            metadata['confidence'] = result.confidence
+        if hasattr(result, 'reasoning'):
+            metadata['reasoning'] = result.reasoning
+        
+        # Return properly structured agent response
         return AgentResponse(
             response=result.response,
-            session_id=result.session_id or session_id or "unknown",
             tools_used=result.tools_used,
+            session_id=result.session_id,
             sources=source_info,
             status=result.status,
-            confidence=getattr(result, 'confidence', None),
-            response_time=response_time,
-            token_count=getattr(result, 'token_count', None),
-            agent_type="llm_agent",
-            model_version="2.0.0"
+            metadata=metadata if metadata else None
         )
         
     except HTTPException:
         raise
+    except AgentProcessingError as e:
+        logger.error(f"Agent processing error: {e.message}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Agent processing failed: {e.message}"
+        )
+    except ToolExecutionError as e:
+        logger.error(f"Tool execution error: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Tool execution failed: {str(e)}"
+        )
     except Exception as e:
-        raise AgentProcessingError(
-            message="Failed to process agent request",
-            details={"original_error": str(e)}
+        logger.exception("Unexpected error in unified agent endpoint")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error: {str(e)}"
         )
 
 @router.get("/agent/tools", response_model=ToolListResponse)

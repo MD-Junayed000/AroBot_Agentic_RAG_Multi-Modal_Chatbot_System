@@ -556,757 +556,579 @@ class LLMAgent:
     
     @tool(
         name="analyze_image", 
-        description="Analyze images including prescriptions, medical diagrams, anatomy charts, or general images. Performs OCR and visual analysis.",
+        description="Analyze images including prescriptions, medical diagrams, anatomy charts, or general images. Performs OCR and visual analysis with intelligent classification.",
         category="medical",
         priority=4
     )
     @traceable(name="analyze_image_tool")
     async def _tool_analyze_image(self, image_data: bytes, question: Optional[str] = None, session_id: Optional[str] = None) -> Dict[str, Any]:
-        """Analyze image with comprehensive prescription and medical image processing"""
+        """Enhanced image analysis with intelligent multi-stage classification"""
         try:
-            # First, always run OCR to extract text
+            # Get session context for better classification
+            session_context = self._get_conversation_context(session_id) if session_id else ""
+            
+            # Initialize multimodal processor for classification
+            from core.multimodal_processor import MultiModalProcessor
+            processor = MultiModalProcessor()
+            
+            # Step 1: Classify the image using advanced classification
+            classification = processor.classify_image(image_data, question, session_context)
+            
+            logger.info(f"Image classified as: {classification.category.value} with confidence {classification.confidence:.2f}")
+            logger.info(f"Classification reasoning: {classification.reasoning}")
+            
+            # Step 2: Route to appropriate handler based on classification
+            if classification.category.value == "prescription":
+                return await self._handle_prescription_image(image_data, question, classification)
+            elif classification.category.value in ["medicine_package", "medicine_bottle", "medicine_strip"]:
+                return await self._handle_medicine_package_image(image_data, question, classification)
+            elif classification.category.value == "lab_results":
+                return await self._handle_lab_results_image(image_data, question, classification)
+            elif classification.category.value == "anatomy_diagram":
+                return await self._handle_anatomy_diagram_image(image_data, question, classification)
+            elif classification.category.value == "medical_chart":
+                return await self._handle_medical_chart_image(image_data, question, classification)
+            elif classification.category.value in ["xray_scan", "medical_report"]:
+                return await self._handle_medical_scan_image(image_data, question, classification)
+            else:
+                return await self._handle_general_image(image_data, question, classification)
+            
+        except Exception as e:
+            logger.exception(f"Error in enhanced image analysis: {e}")
+            # Fallback to basic analysis
+            try:
+                ocr_result = self.llm.ocr_only(image_data)
+                ocr_text = ocr_result.get("raw_text", "")
+                
+                if question:
+                    response = f"I encountered an issue with advanced analysis, but I can see some text in the image:\n\n{ocr_text[:500]}"
+                    if len(ocr_text) > 500:
+                        response += "..."
+                else:
+                    response = f"I had trouble with detailed analysis, but extracted this text: {ocr_text[:200]}{'...' if len(ocr_text) > 200 else ''}"
+                
+                return {"response": response, "error": f"Advanced analysis failed: {str(e)}", "status": "partial_success"}
+            except Exception as e2:
+                return {"error": f"Complete analysis failure: {str(e)} | {str(e2)}", "status": "error"}
+
+    async def _handle_prescription_image(self, image_data: bytes, question: Optional[str], classification) -> Dict[str, Any]:
+        """Handle prescription images with enhanced processing"""
+        try:
+            # Extract OCR text
             ocr_result = self.llm.ocr_only(image_data)
             ocr_text = ocr_result.get("raw_text", "")
             
-            # Enhanced medicine detection patterns
-            medicine_indicators = [
-                "tablet", "capsule", "mg", "ml", "dose", "dosage", "rx", "prescription",
-                "medicine", "drug", "pharmaceutical", "pharma", "ltd", "limited",
-                "syrup", "suspension", "injection", "cream", "ointment", "drops"
-            ]
-            
-            # Check if this looks like a medicine/prescription based on OCR content
-            is_medicine = any(indicator in ocr_text.lower() for indicator in medicine_indicators)
-            
-            # Enhanced medicine name extraction from OCR text
+            # Enhanced medicine name extraction
             extracted_medicine_names = self._extract_medicine_names_from_ocr(ocr_text)
             
-            if is_medicine or extracted_medicine_names or (question and any(term in question.lower() for term in ["medicine", "prescription", "drug", "tablet"])):
-                # Step 1: Enhanced OCR and Vision Analysis for prescriptions
-                vision_prompt = (
-                    "Analyze this prescription image carefully. Extract:\n"
-                    "1. Doctor's name and clinic information from the header\n"
-                    "2. All medicine names (look for Tab, Syp, Cap, Inj prefixes)\n"
-                    "3. Quantities and dosage instructions for each medicine\n"
-                    "4. Any special instructions or notes\n"
-                    "Provide a clear, structured analysis of what you can see."
-                )
-                vision_response = self.llm.generate_vision_response(vision_prompt, image_data=image_data)
-                
-                # Step 2: Extract medicine names from both OCR and Vision
-                all_medicine_names = extracted_medicine_names.copy()
-                vision_extracted_names = self._extract_medicine_names_from_text(vision_response)
-                all_medicine_names.extend(vision_extracted_names)
-                
-                # Clean and deduplicate medicine names
-                unique_medicine_names = []
-                seen_names = set()
-                for name in all_medicine_names:
-                    clean_name = name.strip().lower()
-                    if len(clean_name) > 2 and clean_name not in seen_names:
-                        unique_medicine_names.append(name)
-                        seen_names.add(clean_name)
-                
-                logger.info(f"Extracted medicine names: {unique_medicine_names}")
-                    
-                # Step 3: Build comprehensive response
-                response_parts = []
-                
-                # Add prescription analysis from vision in a friendly way
-                response_parts.append("**Here's what I can see in your prescription:**")
-                response_parts.append(vision_response)
-                
-                # Skip showing raw OCR text to users - it's confusing
-                # Only show it if it contains useful readable information
-                if ocr_text.strip() and len(unique_medicine_names) == 0:
-                    # Only show OCR if we couldn't extract medicine names properly
-                    clean_ocr = ' '.join(ocr_text.split())  # Clean up spacing
-                    if len(clean_ocr) > 30:  # Only if substantial text
-                        response_parts.append(f"\n**Text I could read from the image:**\n{clean_ocr}")
-                
-                # Step 4: RAG → LLM for each medicine with friendly presentation
-                if unique_medicine_names:
-                    response_parts.append(f"\n**Let me tell you about your medicines:**")
-                    
-                    for i, medicine_name in enumerate(unique_medicine_names[:3], 1):  # Limit to 3 medicines
-                        try:
-                            logger.info(f"Getting information for: {medicine_name}")
-                            
-                            # Use enhanced RAG → LLM pipeline
-                            medicine_info_result = await self._tool_get_medicine_info(medicine_name, want_price=False)
-                            
-                            if medicine_info_result.get("response"):
-                                response_parts.append(f"\n**Medicine #{i}: {medicine_name.title()}**")
-                                response_parts.append(medicine_info_result["response"])
-                                
-                                # Log RAG usage (for debugging, not user-facing)
-                                rag_sources = medicine_info_result.get("rag_sources", 0)
-                                if rag_sources > 0:
-                                    logger.info(f"Used {rag_sources} medical sources for {medicine_name}")
-                            
-                        except Exception as e:
-                            logger.warning(f"Failed to get info for {medicine_name}: {e}")
-                            continue
-                else:
-                    response_parts.append("\n**Note:** I had trouble reading the medicine names clearly from this image. For the best information about your medicines, you can:")
-                    response_parts.append("• Ask your pharmacist about each medicine")
-                    response_parts.append("• Check the medicine packaging for details")
-                    response_parts.append("• Contact your doctor's office if you have questions")
-                
-                # Step 5: Answer specific questions in a helpful way
-                if question and question.strip() and "how should i take" in question.lower():
-                    instruction_prompt = f"""
-                    Based on what I can see in this prescription, help the patient understand how to take their medicines.
-                    
-                    Prescription details: {vision_response}
-                    
-                    Please provide clear, simple instructions like:
-                    "Here's how to take your medicines:"
-                    
-                    For each medicine, explain:
-                    - When to take it (morning, evening, with food, etc.)
-                    - How many to take at once
-                    - How often during the day
-                    - Any special instructions
-                    
-                    Keep it simple and friendly, like you're talking to a family member.
-                    """
-                    
-                    from core.prompts.system import get_system_prompt
-                    instruction_response = self.llm.text_gen.generate_response(
-                        instruction_prompt,
-                        system_prompt=get_system_prompt("medical")
-                    )
-                    
-                    response_parts.append(f"\n{instruction_response}")
-                
-                full_response = "\n".join(response_parts)
-                
-                # Remove technical attribution for users - keep it simple
-                full_response += "\n\n**Remember:** Always follow your doctor's instructions and ask your pharmacist if you have any questions about your medicines!"
-                
-                return {"response": full_response, "ocr_data": ocr_result, "extracted_medicines": unique_medicine_names}
+            # Enhanced vision analysis for prescriptions
+            vision_prompt = (
+                "Analyze this prescription image carefully. Extract:\n"
+                "1. Doctor's name and clinic information from the header\n"
+                "2. All medicine names (look for Tab, Syp, Cap, Inj prefixes)\n"
+                "3. Quantities and dosage instructions for each medicine\n"
+                "4. Any special instructions or notes\n"
+                "Provide a clear, structured analysis of what you can see."
+            )
+            vision_response = self.llm.generate_vision_response(vision_prompt, image_data=image_data)
             
-            else:
-                # General image analysis
-                if question:
-                    vision_response = self.llm.generate_vision_response(question, image_data=image_data)
-                    if ocr_text.strip():
-                        response = f"**Visual Analysis:**\n{vision_response}\n\n**Text Found:**\n{ocr_text}"
-                    else:
-                        response = vision_response
-                else:
-                    brief = self.llm.default_image_brief(image_data)
-                    if ocr_text.strip():
-                        response = f"{brief}\n\n**Text in Image:**\n{ocr_text[:500]}{'...' if len(ocr_text) > 500 else ''}"
-                    else:
-                        response = brief
+            # Extract medicine names from vision analysis
+            vision_extracted_names = self._extract_medicine_names_from_text(vision_response)
+            all_medicine_names = list(set(extracted_medicine_names + vision_extracted_names))
+            
+            # Build comprehensive response
+            response_parts = []
+            response_parts.append(f"**Prescription Analysis** (Confidence: {classification.confidence:.1%})")
+            response_parts.append(vision_response)
+            
+            # Process each medicine
+            if all_medicine_names:
+                response_parts.append(f"\n**Medicine Information:**")
                 
-                return {"response": response, "ocr_data": ocr_result}
+                for i, medicine_name in enumerate(all_medicine_names[:3], 1):
+                    try:
+                        medicine_info_result = await self._tool_get_medicine_info(medicine_name, want_price=False)
+                        if medicine_info_result.get("response"):
+                            response_parts.append(f"\n**{i}. {medicine_name.title()}**")
+                            response_parts.append(medicine_info_result["response"])
+                    except Exception as e:
+                        logger.warning(f"Failed to get info for {medicine_name}: {e}")
+                        continue
+            else:
+                response_parts.append("\n**Note:** I had some difficulty reading the medicine names clearly. You can ask your pharmacist for details about each medication.")
+            
+            # Add usage instructions if requested
+            if question and "how to take" in question.lower():
+                instruction_response = self._generate_usage_instructions(vision_response, all_medicine_names)
+                response_parts.append(f"\n{instruction_response}")
+            
+            response_parts.append("\n**Important:** Always follow your doctor's instructions and consult your pharmacist if you have questions!")
+            
+            full_response = "\n".join(response_parts)
+            
+            return {
+                "response": full_response,
+                "classification": classification.category.value,
+                "confidence": classification.confidence,
+                "reasoning": classification.reasoning,
+                "extracted_medicines": all_medicine_names,
+                "ocr_data": ocr_result,
+                "status": "success"
+            }
             
         except Exception as e:
-            logger.exception(f"Error in analyze_image tool: {e}")
-            # Fallback to basic OCR
+            logger.exception(f"Error handling prescription image: {e}")
+            return {"error": str(e), "status": "error"}
+
+    async def _handle_medicine_package_image(self, image_data: bytes, question: Optional[str], classification) -> Dict[str, Any]:
+        """Handle medicine package/bottle/strip images"""
+        try:
+            # Extract text from package
+            ocr_result = self.llm.ocr_only(image_data)
+            ocr_text = ocr_result.get("raw_text", "")
+            
+            # Analyze package with specific prompt
+            vision_prompt = (
+                "Analyze this medicine package/bottle/strip. Identify:\n"
+                "1. Medicine name and brand\n"
+                "2. Strength/dosage (mg, ml, etc.)\n"
+                "3. Manufacturer information\n"
+                "4. Expiry date if visible\n"
+                "5. Batch number if visible\n"
+                "6. Any usage instructions on the package"
+            )
+            vision_response = self.llm.generate_vision_response(vision_prompt, image_data=image_data)
+            
+            # Extract medicine name
+            medicine_names = self._extract_medicine_names_from_text(vision_response) + self._extract_medicine_names_from_ocr(ocr_text)
+            main_medicine = medicine_names[0] if medicine_names else "Unknown Medicine"
+            
+            # Get detailed medicine information
+            medicine_details = {}
+            if main_medicine != "Unknown Medicine":
+                try:
+                    medicine_info_result = await self._tool_get_medicine_info(main_medicine, want_price=False)
+                    medicine_details = medicine_info_result
+                except Exception as e:
+                    logger.warning(f"Could not get details for {main_medicine}: {e}")
+            
+            # Build response
+            response_parts = []
+            response_parts.append(f"**Medicine Package Analysis** (Confidence: {classification.confidence:.1%})")
+            response_parts.append(vision_response)
+            
+            if medicine_details.get("response"):
+                response_parts.append(f"\n**Detailed Information about {main_medicine}:**")
+                response_parts.append(medicine_details["response"])
+            
+            # Safety reminders for packages
+            response_parts.append("\n**Package Safety Tips:**")
+            response_parts.append("• Check expiry date before use")
+            response_parts.append("• Store as directed on package")
+            response_parts.append("• Keep out of reach of children")
+            response_parts.append("• Follow dosage instructions carefully")
+            
+            full_response = "\n".join(response_parts)
+            
+            return {
+                "response": full_response,
+                "classification": classification.category.value,
+                "confidence": classification.confidence,
+                "reasoning": classification.reasoning,
+                "extracted_medicine": main_medicine,
+                "package_info": vision_response,
+                "status": "success"
+            }
+            
+        except Exception as e:
+            logger.exception(f"Error handling medicine package: {e}")
+            return {"error": str(e), "status": "error"}
+
+    async def _handle_lab_results_image(self, image_data: bytes, question: Optional[str], classification) -> Dict[str, Any]:
+        """Handle lab results and medical test reports"""
+        try:
+            # Extract text from lab results
+            ocr_result = self.llm.ocr_only(image_data)
+            ocr_text = ocr_result.get("raw_text", "")
+            
+            # Analyze lab results with specific prompt
+            vision_prompt = (
+                "Analyze this lab report/test results. Identify:\n"
+                "1. Test names and their values\n"
+                "2. Normal/reference ranges\n"
+                "3. Any abnormal or flagged results\n"
+                "4. Patient information if visible\n"
+                "5. Date of test\n"
+                "6. Laboratory name\n"
+                "Provide a clear summary of the key findings."
+            )
+            vision_response = self.llm.generate_vision_response(vision_prompt, image_data=image_data)
+            
+            # Build response
+            response_parts = []
+            response_parts.append(f"**Lab Results Analysis** (Confidence: {classification.confidence:.1%})")
+            response_parts.append(vision_response)
+            
+            # Add interpretation if specific question asked
+            if question and any(term in question.lower() for term in ["normal", "abnormal", "meaning", "interpret"]):
+                interpretation_prompt = f"""
+                Based on this lab results analysis: {vision_response}
+                
+                Provide a simple interpretation of what these results might mean. 
+                Be careful to:
+                1. Explain in simple terms
+                2. Highlight any values outside normal ranges
+                3. Emphasize the need for doctor consultation
+                4. Avoid making diagnoses
+                """
+                
+                from core.prompts.system import get_system_prompt
+                interpretation = self.llm.text_gen.generate_response(
+                    interpretation_prompt,
+                    system_prompt=get_system_prompt("medical")
+                )
+                
+                response_parts.append(f"\n**Simple Interpretation:**")
+                response_parts.append(interpretation)
+            
+            response_parts.append("\n**Important:** Lab results should always be interpreted by a qualified healthcare provider. This analysis is for informational purposes only.")
+            
+            full_response = "\n".join(response_parts)
+            
+            return {
+                "response": full_response,
+                "classification": classification.category.value,
+                "confidence": classification.confidence,
+                "reasoning": classification.reasoning,
+                "lab_data": vision_response,
+                "status": "success"
+            }
+            
+        except Exception as e:
+            logger.exception(f"Error handling lab results: {e}")
+            return {"error": str(e), "status": "error"}
+
+    async def _handle_anatomy_diagram_image(self, image_data: bytes, question: Optional[str], classification) -> Dict[str, Any]:
+        """Handle anatomy diagrams and medical illustrations"""
+        try:
+            # Analyze anatomy diagram
+            vision_prompt = (
+                "Analyze this anatomy diagram or medical illustration. Identify:\n"
+                "1. Body system or organ shown\n"
+                "2. Labeled parts and structures\n"
+                "3. Any pathological conditions illustrated\n"
+                "4. Educational content or key points\n"
+                "Provide an educational explanation of what's shown."
+            )
+            vision_response = self.llm.generate_vision_response(vision_prompt, image_data=image_data)
+            
+            # Try to get additional context from anatomy knowledge base
+            anatomy_context = []
             try:
-                ocr_fallback = self.llm.ocr_only(image_data)
-                ocr_text = ocr_fallback.get("raw_text", "")
-                if ocr_text:
-                    return {"response": f"I extracted this text from the image:\n\n{ocr_text}", "error": f"Partial analysis due to: {str(e)}"}
+                # Extract key anatomy terms for RAG search
+                anatomy_terms = self._extract_anatomy_terms(vision_response)
+                if anatomy_terms:
+                    for term in anatomy_terms[:2]:  # Limit to 2 terms
+                        context = self.llm.gather_rag_context(f"anatomy {term}", limit=2)
+                        anatomy_context.extend(context)
+            except Exception as e:
+                logger.warning(f"Could not get anatomy context: {e}")
+            
+            # Build response
+            response_parts = []
+            response_parts.append(f"**Anatomy Diagram Analysis** (Confidence: {classification.confidence:.1%})")
+            response_parts.append(vision_response)
+            
+            # Add educational context if available
+            if anatomy_context:
+                response_parts.append(f"\n**Educational Context:**")
+                for i, context in enumerate(anatomy_context[:2], 1):
+                    response_parts.append(f"{i}. {context[:300]}{'...' if len(context) > 300 else ''}")
+            
+            # Answer specific questions about the diagram
+            if question and any(term in question.lower() for term in ["function", "purpose", "what does", "how does"]):
+                educational_prompt = f"""
+                Based on this anatomy diagram analysis: {vision_response}
+                
+                Answer this question: {question}
+                
+                Provide an educational explanation suitable for learning anatomy.
+                """
+                
+                from core.prompts.system import get_system_prompt
+                educational_response = self.llm.text_gen.generate_response(
+                    educational_prompt,
+                    system_prompt=get_system_prompt("general")
+                )
+                
+                response_parts.append(f"\n**Answer to your question:**")
+                response_parts.append(educational_response)
+            
+            full_response = "\n".join(response_parts)
+            
+            return {
+                "response": full_response,
+                "classification": classification.category.value,
+                "confidence": classification.confidence,
+                "reasoning": classification.reasoning,
+                "diagram_analysis": vision_response,
+                "status": "success"
+            }
+            
+        except Exception as e:
+            logger.exception(f"Error handling anatomy diagram: {e}")
+            return {"error": str(e), "status": "error"}
+
+    async def _handle_medical_chart_image(self, image_data: bytes, question: Optional[str], classification) -> Dict[str, Any]:
+        """Handle medical charts, graphs, and measurement tools"""
+        try:
+            vision_prompt = (
+                "Analyze this medical chart or graph. Identify:\n"
+                "1. Type of chart/measurement tool\n"
+                "2. Scale or measurement units\n"
+                "3. Any data points or readings\n"
+                "4. Purpose or medical application\n"
+                "Explain how to read or interpret this chart."
+            )
+            vision_response = self.llm.generate_vision_response(vision_prompt, image_data=image_data)
+            
+            response_parts = []
+            response_parts.append(f"**Medical Chart Analysis** (Confidence: {classification.confidence:.1%})")
+            response_parts.append(vision_response)
+            
+            full_response = "\n".join(response_parts)
+            
+            return {
+                "response": full_response,
+                "classification": classification.category.value,
+                "confidence": classification.confidence,
+                "reasoning": classification.reasoning,
+                "status": "success"
+            }
+            
+        except Exception as e:
+            logger.exception(f"Error handling medical chart: {e}")
+            return {"error": str(e), "status": "error"}
+
+    async def _handle_medical_scan_image(self, image_data: bytes, question: Optional[str], classification) -> Dict[str, Any]:
+        """Handle X-rays, CT scans, and other medical imaging"""
+        try:
+            vision_prompt = (
+                "Analyze this medical scan image. Note:\n"
+                "1. Type of scan (X-ray, CT, MRI, etc.)\n"
+                "2. Body part being examined\n"
+                "3. Any visible structures or abnormalities\n"
+                "4. Image quality and positioning\n"
+                "Provide a general description - avoid making diagnoses."
+            )
+            vision_response = self.llm.generate_vision_response(vision_prompt, image_data=image_data)
+            
+            response_parts = []
+            response_parts.append(f"**Medical Scan Analysis** (Confidence: {classification.confidence:.1%})")
+            response_parts.append(vision_response)
+            response_parts.append("\n**Important:** Medical scans require professional interpretation by qualified radiologists or doctors. This analysis is for educational purposes only.")
+            
+            full_response = "\n".join(response_parts)
+            
+            return {
+                "response": full_response,
+                "classification": classification.category.value,
+                "confidence": classification.confidence,
+                "reasoning": classification.reasoning,
+                "status": "success"
+            }
+            
+        except Exception as e:
+            logger.exception(f"Error handling medical scan: {e}")
+            return {"error": str(e), "status": "error"}
+
+    async def _handle_general_image(self, image_data: bytes, question: Optional[str], classification) -> Dict[str, Any]:
+        """Handle general images with OCR and basic analysis"""
+        try:
+            # Extract text
+            ocr_result = self.llm.ocr_only(image_data)
+            ocr_text = ocr_result.get("raw_text", "")
+            
+            # General image analysis
+            if question:
+                vision_response = self.llm.generate_vision_response(question, image_data=image_data)
+                if ocr_text.strip():
+                    response = f"**Image Analysis:**\n{vision_response}\n\n**Text Found:**\n{ocr_text}"
                 else:
-                    return {"response": "I could see the image but couldn't extract meaningful information from it.", "error": str(e)}
-            except Exception as e2:
-                return {"error": f"Complete analysis failure: {str(e)} | {str(e2)}"}
-    
+                    response = vision_response
+            else:
+                brief = self.llm.default_image_brief(image_data)
+                if ocr_text.strip():
+                    response = f"{brief}\n\n**Text in Image:**\n{ocr_text[:500]}{'...' if len(ocr_text) > 500 else ''}"
+                else:
+                    response = brief
+            
+            return {
+                "response": response,
+                "classification": classification.category.value,
+                "confidence": classification.confidence,
+                "reasoning": classification.reasoning,
+                "ocr_data": ocr_result,
+                "status": "success"
+            }
+            
+        except Exception as e:
+            logger.exception(f"Error handling general image: {e}")
+            return {"error": str(e), "status": "error"}
+
+    def _generate_usage_instructions(self, vision_response: str, medicine_names: List[str]) -> str:
+        """Generate usage instructions based on prescription analysis"""
+        instruction_prompt = f"""
+        Based on this prescription analysis: {vision_response}
+        
+        And these medicines: {', '.join(medicine_names)}
+        
+        Provide clear, simple instructions on how to take these medicines:
+        - When to take each medicine (morning, evening, with food, etc.)
+        - How many to take at once
+        - How often during the day
+        - Any special instructions
+        
+        Keep it simple and friendly, like explaining to a family member.
+        """
+        
+        try:
+            from core.prompts.system import get_system_prompt
+            instructions = self.llm.text_gen.generate_response(
+                instruction_prompt,
+                system_prompt=get_system_prompt("medical")
+            )
+            return f"**How to Take Your Medicines:**\n{instructions}"
+        except Exception as e:
+            logger.warning(f"Could not generate usage instructions: {e}")
+            return "**How to Take Your Medicines:**\nPlease follow the instructions on your prescription or consult your pharmacist for detailed guidance."
+
+
     def _extract_medicine_names_from_ocr(self, ocr_text: str) -> List[str]:
-        """Extract potential medicine names from OCR text with improved prescription patterns"""
+        """Extract medicine names from OCR text using enhanced patterns"""
         import re
+        
+        if not ocr_text:
+            return []
+        
+        text_lower = ocr_text.lower()
         medicine_names = []
         
-        # Clean OCR text first - remove noise and fix common OCR errors
-        cleaned_text = ocr_text
-        # Fix common OCR mistakes
-        ocr_fixes = {
-            r'Tsy': 'Tab',
-            r'TA3': 'Tab',
-            r'Ta3': 'Tab',
-            r'Syp': 'Syrup',
-            r'Cap': 'Capsule',
-            r'Inj': 'Injection',
-            r'O\s*-\)': '',  # Remove O-) pattern
-            r'[-\(\)]+$': '',  # Remove trailing symbols
-        }
-        
-        for pattern, replacement in ocr_fixes.items():
-            cleaned_text = re.sub(pattern, replacement, cleaned_text, flags=re.IGNORECASE)
-        
-        # Enhanced patterns for prescription format
-        patterns = [
-            r'Tab\s+([A-Z][A-Z\s]+?)(?:\s+[-\d\(\)]|$)',  # Tab MEDICINE_NAME
-            r'Tablet\s+([A-Z][A-Z\s]+?)(?:\s+[-\d\(\)]|$)',  # Tablet MEDICINE_NAME
-            r'Syrup\s+([A-Z][A-Z\s]+?)(?:\s+[-\d\(\)]|$)',  # Syrup MEDICINE_NAME  
-            r'Capsule\s+([A-Z][A-Z\s]+?)(?:\s+[-\d\(\)]|$)',  # Capsule MEDICINE_NAME
-            r'Injection\s+([A-Z][A-Z\s]+?)(?:\s+[-\d\(\)]|$)',  # Injection MEDICINE_NAME
-            r'^\s*\d+[\.\)]\s*([A-Z][A-Z\s]+?)(?:\s+[-\d\(\)]|$)',  # 1. MEDICINE_NAME
-            r'\b([A-Z]{4,}[A-Z\s]*?)(?:\s+O[2-9]?|\s+M[LT]|\s+\d+|\s*$)',  # Medicine names like AFLAZEST, AZENAC
+        # Enhanced medicine patterns for prescription format
+        medicine_patterns = [
+            r'tab\.?\s+(\w+)',  # Tab. or Tab
+            r'syp\.?\s+(\w+)',  # Syp. or Syp  
+            r'cap\.?\s+(\w+)',  # Cap. or Cap
+            r'inj\.?\s+(\w+)',  # Inj. or Inj
+            r'(\w+)\s+\d+\s*mg',  # Medicine name with mg
+            r'(\w+)\s+\d+\s*ml',  # Medicine name with ml
+            r'(\w+)\s+\d+\s*mg/\s*\w+',  # Medicine with mg/other unit
+            r'(\w+)\s+\d+\s*mg\s*/\s*\w+',  # Medicine with mg / other unit
+            r'(\w+)\s+\d+\s*mg\s*/\s*\w+\s*mg',  # Medicine with mg/mg format
         ]
         
-        # Process line by line for better extraction
-        lines = cleaned_text.split('\n')
-        for line in lines:
-            line = line.strip()
-            if len(line) < 3:
-                continue
-                
-            for pattern in patterns:
-                matches = re.findall(pattern, line, re.IGNORECASE | re.MULTILINE)
-                for match in matches:
-                    # Clean the match
-                    cleaned = re.sub(r'\s+', ' ', match.strip())
-                    # Remove trailing noise
-                    cleaned = re.sub(r'[^A-Za-z\s].*$', '', cleaned).strip()
-                    if len(cleaned) > 2:
-                        medicine_names.append(cleaned)
+        for pattern in medicine_patterns:
+            matches = re.findall(pattern, text_lower)
+            medicine_names.extend(matches)
         
-        # Additional pattern for medicine names in the middle of noisy text
-        # Look for sequences of capital letters that could be medicine names
-        capital_sequences = re.findall(r'\b([A-Z]{4,}[A-Z]*)\b', cleaned_text)
-        for seq in capital_sequences:
-            if len(seq) >= 4 and seq not in ['TABLET', 'CAPSULE', 'SYRUP', 'INJECTION']:
-                medicine_names.append(seq)
+        # Additional patterns for common medicine formats
+        additional_patterns = [
+            r'(\w+)\s+\d+\s*mg\s*/\s*\w+\s*mg\s*/\s*\w+',  # Complex format
+            r'(\w+)\s+\d+\s*mg\s*/\s*\w+\s*mg\s*/\s*\w+\s*mg',  # Very complex format
+        ]
+        
+        for pattern in additional_patterns:
+            matches = re.findall(pattern, text_lower)
+            medicine_names.extend(matches)
         
         # Clean and filter results
         cleaned_names = []
         excluded_words = {
             'tablet', 'capsule', 'syrup', 'injection', 'medicine', 'pharma', 
             'limited', 'ltd', 'the', 'and', 'for', 'tab', 'cap', 'syp', 'inj',
-            'jkath', 'xane', 'daw', 'zof', 'ath', 'tsy'  # Common OCR errors
+            'mg', 'ml', 'g', 'mcg', 'dose', 'dosage'
         }
         
         for name in medicine_names:
-            name_lower = name.lower().strip()
-            if (len(name) >= 4 and 
-                name_lower not in excluded_words and
-                not re.match(r'^[^A-Za-z]*$', name) and  # Not just symbols
-                len(re.sub(r'[^A-Za-z]', '', name)) >= 3):  # At least 3 letters
-                cleaned_names.append(name)
+            name_clean = name.strip().lower()
+            if (len(name_clean) >= 3 and 
+                name_clean not in excluded_words and
+                not re.match(r'^[^a-z]*$', name_clean) and  # Not just symbols
+                len(re.sub(r'[^a-z]', '', name_clean)) >= 3):  # At least 3 letters
+                cleaned_names.append(name.strip())
         
         return list(set(cleaned_names))  # Remove duplicates
-    
+
     def _extract_medicine_names_from_text(self, text: str) -> List[str]:
-        """Extract potential medicine names from analysis text"""
+        """Extract medicine names from analysis text"""
         import re
+        
+        if not text:
+            return []
+        
+        text_lower = text.lower()
         medicine_names = []
         
         # Look for medicine names in structured responses
-        patterns = [
-            r'Medicine[:\s]+([A-Za-z][A-Za-z\s]+?)(?:\n|$|\s*[-•])',
-            r'Brand[:\s]+([A-Za-z][A-Za-z\s]+?)(?:\n|$|\s*[-•])',
-            r'Name[:\s]+([A-Za-z][A-Za-z\s]+?)(?:\n|$|\s*[-•])',
-            r'\*\*([A-Za-z][A-Za-z\s]+?)\*\*',  # Bold text often contains medicine names
+        medicine_patterns = [
+            r'(\w+)\s+\d+\s*mg',  # Medicine name with mg
+            r'(\w+)\s+\d+\s*ml',  # Medicine name with ml
+            r'tab\.?\s+(\w+)',  # Tab. or Tab
+            r'syp\.?\s+(\w+)',  # Syp. or Syp
+            r'cap\.?\s+(\w+)',  # Cap. or Cap
+            r'inj\.?\s+(\w+)',  # Inj. or Inj
         ]
         
-        for pattern in patterns:
-            matches = re.findall(pattern, text, re.IGNORECASE)
+        for pattern in medicine_patterns:
+            matches = re.findall(pattern, text_lower)
             medicine_names.extend(matches)
         
-        # Clean results
+        # Look for medicine names mentioned in descriptions
+        description_patterns = [
+            r'medicine[:\s]+(\w+)',
+            r'drug[:\s]+(\w+)',
+            r'medication[:\s]+(\w+)',
+            r'prescribed[:\s]+(\w+)',
+        ]
+        
+        for pattern in description_patterns:
+            matches = re.findall(pattern, text_lower)
+            medicine_names.extend(matches)
+        
+        # Clean and filter results
         cleaned_names = []
+        excluded_words = {
+            'tablet', 'capsule', 'syrup', 'injection', 'medicine', 'pharma', 
+            'limited', 'ltd', 'the', 'and', 'for', 'tab', 'cap', 'syp', 'inj',
+            'mg', 'ml', 'g', 'mcg', 'dose', 'dosage', 'patient', 'doctor'
+        }
+        
         for name in medicine_names:
-            cleaned = name.strip()
-            if len(cleaned) > 2 and not any(word in cleaned.lower() for word in ['information', 'analysis', 'tablet', 'capsule', 'the', 'and', 'for']):
-                cleaned_names.append(cleaned)
+            name_clean = name.strip().lower()
+            if (len(name_clean) >= 3 and 
+                name_clean not in excluded_words and
+                not re.match(r'^[^a-z]*$', name_clean) and  # Not just symbols
+                len(re.sub(r'[^a-z]', '', name_clean)) >= 3):  # At least 3 letters
+                cleaned_names.append(name.strip())
         
         return list(set(cleaned_names))  # Remove duplicates
-    
-    @tool(
-        name="analyze_pdf",
-        description="Analyze PDF documents, extract text and images, summarize content, or answer questions about PDFs. Good for medical papers and documents with multimodal analysis.",
-        category="documents", 
-        priority=3
-    )
-    async def _tool_analyze_pdf(self, pdf_data: bytes, question: Optional[str] = None, session_id: Optional[str] = None) -> Dict[str, Any]:
-        """Comprehensive PDF analysis with optimized multimodal processing using CLIP"""
-        try:
-            from langchain_community.document_loaders import PyPDFLoader
-            import tempfile
-            import os
-            import fitz  # PyMuPDF for image extraction
-            from PIL import Image
-            import io
-            import asyncio
-            from concurrent.futures import ThreadPoolExecutor
-            
-            # Save PDF to temp file
-            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-                tmp.write(pdf_data)
-                tmp_path = tmp.name
-            
-            try:
-                # Step 1: Extract text using LangChain
-                loader = PyPDFLoader(tmp_path)
-                docs = loader.load()
-                
-                # Extract text and page information
-                pages_content = []
-                full_text = ""
-                for i, doc in enumerate(docs):
-                    page_text = doc.page_content.strip()
-                    if page_text:
-                        pages_content.append(f"**Page {i+1}:**\n{page_text[:1000]}{'...' if len(page_text) > 1000 else ''}")
-                        full_text += page_text + "\n\n"
-                
-                logger.info(f"Extracted text from {len(docs)} pages, {len(full_text)} characters")
-                
-                # Step 2: Extract and analyze images with better error handling
-                image_analysis_results = []
-                try:
-                    doc = fitz.open(tmp_path)
-                    logger.info(f"Opened PDF with {len(doc)} pages for image extraction")
-                    
-                    # Extract all images first
-                    all_images = []
-                    total_images_found = 0
-                    
-                    for page_idx in range(len(doc)):
-                        page = doc[page_idx]
-                        image_list = page.get_images(full=True)
-                        total_images_found += len(image_list)
-                        
-                        logger.info(f"Page {page_idx + 1}: Found {len(image_list)} images")
-                        
-                        for img_index, img in enumerate(image_list):
-                            try:
-                                xref = img[0]
-                                base_image = doc.extract_image(xref)
-                                image_bytes = base_image["image"]
-                                
-                                # Check if image is valid
-                                if len(image_bytes) < 100:  # Skip very small images
-                                    logger.warning(f"Skipping small image on page {page_idx + 1}")
-                                    continue
-                                
-                                pil_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-                                
-                                # Check image dimensions
-                                width, height = pil_image.size
-                                if width < 50 or height < 50:  # Skip very small images
-                                    logger.warning(f"Skipping small image {width}x{height} on page {page_idx + 1}")
-                                    continue
-                                
-                                all_images.append({
-                                    "image": pil_image,
-                                    "page_num": page_idx + 1,
-                                    "img_num": img_index + 1,
-                                    "size": (width, height)
-                                })
-                                
-                                logger.info(f"Successfully extracted image {img_index + 1} from page {page_idx + 1} ({width}x{height})")
-                                
-                            except Exception as img_e:
-                                logger.warning(f"Error extracting image {img_index + 1} on page {page_idx + 1}: {img_e}")
-                                continue
-                    
-                    doc.close()
-                    logger.info(f"Total images found: {total_images_found}, Successfully extracted: {len(all_images)}")
-                    
-                    # Process images in parallel with smart selection
-                    if all_images:
-                        # Smart image selection: prioritize first few pages and larger images
-                        selected_images = self._select_relevant_images(all_images, question, max_images=10)
-                        logger.info(f"Selected {len(selected_images)} images for analysis")
-                        
-                        # Process images in parallel
-                        image_analysis_results = await self._process_images_parallel(
-                            selected_images, question, max_workers=2  # Reduced workers for stability
-                        )
-                        logger.info(f"Successfully analyzed {len(image_analysis_results)} images")
-                    else:
-                        logger.warning("No valid images found in PDF")
-                    
-                except Exception as clip_e:
-                    logger.error(f"Image processing failed: {clip_e}")
-                    image_analysis_results = []
-                
-                # Step 3: Use CLIP for multimodal text-image correlation
-                multimodal_analysis = await self._analyze_multimodal_content(
-                    full_text, image_analysis_results, question
-                )
-                logger.info(f"Multimodal analysis completed: {multimodal_analysis.get('correlation_score', 0.0):.2f} correlation")
-                
-                # Step 4: Generate optimized response
-                if question and question.strip():
-                    response = await self._generate_optimized_pdf_answer(
-                        question, full_text, image_analysis_results, multimodal_analysis
-                    )
-                else:
-                    response = await self._generate_optimized_pdf_summary(
-                        full_text, image_analysis_results, multimodal_analysis, pages_content
-                    )
-                
-                return {
-                    "response": response,
-                    "document_info": {
-                        "total_pages": len(docs),
-                        "word_count": len(full_text.split()),
-                        "char_count": len(full_text),
-                        "is_medical": multimodal_analysis.get("is_medical", False),
-                        "images_analyzed": len(image_analysis_results),
-                        "multimodal_score": multimodal_analysis.get("correlation_score", 0.0),
-                        "total_images_found": total_images_found if 'total_images_found' in locals() else 0
-                    },
-                    "pages_content": pages_content[:3],
-                    "image_analysis": image_analysis_results[:3]
-                }
-                
-            finally:
-                os.unlink(tmp_path)
-                
-        except Exception as e:
-            logger.exception(f"Error in analyze_pdf tool: {e}")
-            # Fallback attempt
-            try:
-                import fitz
-                
-                with tempfile.NamedTemporaryFile(suffix=".pdf") as tmp:
-                    tmp.write(pdf_data)
-                    tmp.flush()
-                    
-                    doc = fitz.open(tmp.name)
-                    text_content = ""
-                    for page in doc:
-                        text_content += page.get_text() + "\n"
-                    doc.close()
-                    
-                    if text_content.strip():
-                        if question:
-                            response = self.llm.answer_over_pdf_text(question, text_content)
-                        else:
-                            response = f"**PDF Content Summary (via fallback method):**\n\n{text_content[:2000]}{'...' if len(text_content) > 2000 else ''}"
-                        
-                        return {"response": response, "error": f"Used fallback method due to: {str(e)}"}
-                
-            except Exception as e2:
-                return {"error": f"PDF analysis failed completely: {str(e)} | Fallback also failed: {str(e2)}"}
-    
-    def _select_relevant_images(self, all_images: List[Dict], question: Optional[str], max_images: int = 10) -> List[Dict]:
-        """Smart selection of most relevant images with better scoring"""
-        if len(all_images) <= max_images:
-            return all_images
+    def _extract_anatomy_terms(self, text: str) -> List[str]:
+        """Extract anatomy-related terms from text"""
+        anatomy_terms = []
+        text_lower = text.lower()
         
-        # Priority scoring
-        scored_images = []
-        for img_data in all_images:
-            score = 0
-            
-            # Prioritize early pages (likely to be important)
-            if img_data["page_num"] <= 3:
-                score += 5
-            elif img_data["page_num"] <= 10:
-                score += 3
-            elif img_data["page_num"] <= 20:
-                score += 2
-            else:
-                score += 1
-            
-            # Prioritize larger images (likely to be more important)
-            width, height = img_data["size"]
-            area = width * height
-            if area > 200000:  # Very large images
-                score += 4
-            elif area > 100000:  # Large images
-                score += 3
-            elif area > 50000:  # Medium images
-                score += 2
-            elif area > 20000:  # Small images
-                score += 1
-            
-            # If question is about specific content, prioritize accordingly
-            if question:
-                question_lower = question.lower()
-                if any(term in question_lower for term in ["chart", "graph", "diagram", "figure", "image", "picture"]):
-                    score += 3
-            
-            scored_images.append((score, img_data))
+        # Common anatomy terms
+        common_terms = [
+            'heart', 'lung', 'liver', 'kidney', 'brain', 'stomach', 'intestine',
+            'muscle', 'bone', 'joint', 'blood', 'nerve', 'skin', 'eye', 'ear',
+            'respiratory', 'cardiovascular', 'digestive', 'nervous', 'skeletal'
+        ]
         
-        # Sort by score and return top images
-        scored_images.sort(key=lambda x: x[0], reverse=True)
-        selected = [img_data for _, img_data in scored_images[:max_images]]
+        for term in common_terms:
+            if term in text_lower:
+                anatomy_terms.append(term)
         
-        logger.info(f"Selected {len(selected)} images from {len(all_images)} total")
-        return selected
-    
-    async def _process_images_parallel(self, selected_images: List[Dict], question: Optional[str], max_workers: int = 2) -> List[Dict]:
-        """Process multiple images in parallel for better performance"""
-        try:
-            if not selected_images:
-                return []
-            
-            logger.info(f"Processing {len(selected_images)} images with {max_workers} workers")
-            
-            # Use ThreadPoolExecutor for parallel processing
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                # Create tasks for parallel execution
-                tasks = []
-                for img_data in selected_images:
-                    task = asyncio.get_event_loop().run_in_executor(
-                        executor,
-                        self._analyze_single_image_sync,
-                        img_data["image"],
-                        img_data["page_num"],
-                        img_data["img_num"],
-                        question
-                    )
-                    tasks.append(task)
-                
-                # Wait for all tasks to complete with timeout
-                try:
-                    results = await asyncio.wait_for(
-                        asyncio.gather(*tasks, return_exceptions=True),
-                        timeout=60.0  # 60 second timeout
-                    )
-                except asyncio.TimeoutError:
-                    logger.warning("Image processing timed out")
-                    results = []
-                
-                # Filter out exceptions and None results
-                valid_results = []
-                for i, result in enumerate(results):
-                    if isinstance(result, dict) and result.get("description"):
-                        valid_results.append(result)
-                    elif isinstance(result, Exception):
-                        logger.warning(f"Image analysis failed for image {i+1}: {result}")
-                
-                logger.info(f"Successfully processed {len(valid_results)} out of {len(selected_images)} images")
-                return valid_results
-                
-        except Exception as e:
-            logger.error(f"Parallel image processing failed: {e}")
-            return []
-    
-    def _analyze_single_image_sync(self, pil_image: Image.Image, page_num: int, img_num: int, question: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        """Synchronous image analysis for parallel processing"""
-        try:
-            # Check if CLIP is available
-            if not hasattr(self.llm, 'vision') or not hasattr(self.llm.vision, 'clip_available') or not self.llm.vision.clip_available:
-                logger.warning("CLIP not available, using basic image analysis")
-                # Fallback to basic analysis
-                return {
-                    "page_number": page_num,
-                    "image_number": img_num,
-                    "description": f"Image {img_num} from page {page_num} (size: {pil_image.size})",
-                    "clip_embedding": None,
-                    "clip_similarity": 0.0,
-                    "analysis_type": "general"
-                }
-            
-            # Convert PIL image to bytes for vision analysis
-            img_bytes = io.BytesIO()
-            pil_image.save(img_bytes, format='JPEG', quality=75)  # Reduced quality for speed
-            img_bytes = img_bytes.getvalue()
-            
-            # Optimized vision prompt for faster processing
-            if question:
-                vision_prompt = f"Describe this image from page {page_num} of a medical encyclopedia. Focus on: 1) Main content, 2) Text/labels, 3) Medical content, 4) Relevance to: '{question}'"
-            else:
-                vision_prompt = f"Describe this image from page {page_num} of a medical encyclopedia. Focus on: 1) Main content, 2) Text/labels, 3) Medical content, 4) Charts/diagrams"
-            
-            # Use vision model with optimized settings
-            vision_response = self.llm.generate_vision_response(vision_prompt, image_data=img_bytes)
-            
-            # Generate CLIP embeddings for multimodal analysis
-            clip_analysis = self.llm.vision.analyze_image_with_clip(pil_image, vision_prompt)
-            
-            return {
-                "page_number": page_num,
-                "image_number": img_num,
-                "description": vision_response,
-                "clip_embedding": clip_analysis.get("image_embedding"),
-                "clip_similarity": clip_analysis.get("similarity_score", 0.0),
-                "analysis_type": "medical" if any(term in vision_response.lower() for term in [
-                    "medical", "clinical", "anatomy", "prescription", "medicine", "diagnosis", "chart", "graph", "encyclopedia"
-                ]) else "general"
-            }
-            
-        except Exception as e:
-            logger.warning(f"Error analyzing image on page {page_num}: {e}")
-            return None
-    
-    async def _analyze_multimodal_content(self, full_text: str, image_analysis_results: List[Dict], question: Optional[str]) -> Dict[str, Any]:
-        """Use CLIP to analyze text-image correlation and content type"""
-        try:
-            if not image_analysis_results:
-                logger.warning("No image analysis results for multimodal analysis")
-                return {
-                    "is_medical": any(term in full_text.lower() for term in [
-                        "medicine", "medical", "drug", "patient", "treatment", "diagnosis", 
-                        "clinical", "pharmaceutical", "therapy", "symptoms", "disease", "encyclopedia"
-                    ]),
-                    "correlation_score": 0.0,
-                    "multimodal_insights": []
-                }
-            
-            # Extract key text snippets for CLIP analysis
-            text_snippets = self._extract_key_text_snippets(full_text, max_snippets=5)
-            
-            # Use CLIP to find text-image correlations
-            correlations = []
-            for snippet in text_snippets:
-                for img_result in image_analysis_results:
-                    if img_result.get("clip_embedding") is not None:
-                        # Calculate similarity between text and image
-                        similarity = self._calculate_text_image_similarity(snippet, img_result["clip_embedding"])
-                        if similarity > 0.2:  # Lower threshold for more correlations
-                            correlations.append({
-                                "text_snippet": snippet,
-                                "image_page": img_result["page_number"],
-                                "similarity": similarity,
-                                "image_description": img_result["description"]
-                            })
-            
-            # Determine if content is medical based on both text and images
-            is_medical = any(term in full_text.lower() for term in [
-                "medicine", "medical", "drug", "patient", "treatment", "diagnosis", 
-                "clinical", "pharmaceutical", "therapy", "symptoms", "disease", "encyclopedia"
-            ])
-            
-            # Check image analysis for medical indicators
-            if not is_medical:
-                for img_result in image_analysis_results:
-                    if img_result.get("analysis_type") == "medical":
-                        is_medical = True
-                        break
-            
-            logger.info(f"Multimodal analysis: {len(correlations)} correlations found, medical: {is_medical}")
-            
-            return {
-                "is_medical": is_medical,
-                "correlation_score": max([c["similarity"] for c in correlations], default=0.0),
-                "multimodal_insights": correlations[:3],  # Top 3 correlations
-                "text_snippets": text_snippets
-            }
-            
-        except Exception as e:
-            logger.warning(f"Multimodal analysis failed: {e}")
-            return {
-                "is_medical": any(term in full_text.lower() for term in [
-                    "medicine", "medical", "drug", "patient", "treatment", "diagnosis", "encyclopedia"
-                ]),
-                "correlation_score": 0.0,
-                "multimodal_insights": []
-            }
-    
-    def _extract_key_text_snippets(self, full_text: str, max_snippets: int = 5) -> List[str]:
-        """Extract key text snippets for CLIP analysis"""
-        # Split into sentences and select most informative ones
-        sentences = full_text.split('.')
-        key_snippets = []
-        
-        # Prioritize sentences with medical terms
-        medical_terms = ["medicine", "medical", "drug", "treatment", "diagnosis", "clinical", "patient", "therapy", "encyclopedia", "disease", "symptom"]
-        
-        scored_sentences = []
-        for sentence in sentences:
-            if len(sentence.strip()) > 20:  # Minimum length
-                score = sum(1 for term in medical_terms if term in sentence.lower())
-                if score > 0 or len(sentence) > 100:  # Include medical or long sentences
-                    scored_sentences.append((score, sentence.strip()))
-        
-        # Sort by score and length
-        scored_sentences.sort(key=lambda x: (x[0], len(x[1])), reverse=True)
-        
-        for score, sentence in scored_sentences[:max_snippets]:
-            key_snippets.append(sentence[:200])  # Limit snippet length
-        
-        return key_snippets
-    
-    def _calculate_text_image_similarity(self, text_snippet: str, image_embedding: List[float]) -> float:
-        """Calculate similarity between text and image using CLIP"""
-        try:
-            if not hasattr(self.llm.vision, 'clip_model') or self.llm.vision.clip_model is None:
-                return 0.0
-            
-            # Tokenize text
-            text_tokens = clip.tokenize([text_snippet])
-            
-            # Get text embedding
-            with torch.no_grad():
-                text_features = self.llm.vision.clip_model.encode_text(text_tokens)
-                text_embedding = text_features.cpu().numpy()[0]
-            
-            # Calculate cosine similarity
-            import numpy as np
-            similarity = np.dot(text_embedding, image_embedding) / (
-                np.linalg.norm(text_embedding) * np.linalg.norm(image_embedding)
-            )
-            
-            return float(similarity)
-            
-        except Exception as e:
-            logger.warning(f"Text-image similarity calculation failed: {e}")
-            return 0.0
-    
-    async def _generate_optimized_pdf_summary(self, full_text: str, image_analysis_results: List[Dict], multimodal_analysis: Dict, pages_content: List[str]) -> str:
-        """Generate optimized summary using multimodal analysis"""
-        try:
-            # Prepare efficient context
-            context_parts = []
-            
-            # Add text context
-            if full_text.strip():
-                context_parts.append(f"**Text Content:**\n{full_text[:4000]}{'...' if len(full_text) > 4000 else ''}")
-            
-            # Add image context
-            if image_analysis_results:
-                image_context = "**Key Images:**\n"
-                for i, img_result in enumerate(image_analysis_results[:4], 1):
-                    image_context += f"Image {i} (Page {img_result['page_number']}): {img_result['description'][:150]}...\n"
-                context_parts.append(image_context)
-            else:
-                context_parts.append("**Images:** No images were successfully analyzed from this PDF.")
-            
-            # Add multimodal insights
-            if multimodal_analysis.get("multimodal_insights"):
-                insights = "**Text-Image Correlations:**\n"
-                for insight in multimodal_analysis["multimodal_insights"][:3]:
-                    insights += f"• {insight['text_snippet'][:80]}... (Page {insight['image_page']})\n"
-                context_parts.append(insights)
-            
-            # Create optimized summary prompt
-            prompt = f"""
-            Provide a comprehensive summary of this {'medical' if multimodal_analysis.get('is_medical') else ''} PDF document:
-            
-            1. **Main Topic**: What is this document about?
-            2. **Key Points**: 3-5 most important findings
-            3. **Visual Content**: Summary of important images/charts (if any)
-            4. **Structure**: Document organization
-            5. **Key Takeaways**: Most important information for readers
-            
-            CONTEXT:
-            {chr(10).join(context_parts)}
-            
-            Provide a clear, structured summary that integrates text and visual information. If no images were analyzed, mention this in the visual content section.
-            """
-            
-            # Generate summary
-            system_prompt = "You are a medical document analyst. Provide clear, structured summaries with medical accuracy." if multimodal_analysis.get("is_medical") else "You are a document analyst. Provide clear, structured summaries."
-            summary = self.llm.text_gen.generate_response(prompt, system_prompt=system_prompt)
-            
-            # Add statistics
-            doc_stats = f"""
-**Document Statistics:**
-• Total pages: {len(pages_content)}
-• Images analyzed: {len(image_analysis_results)}
-• Content type: {'Medical/Clinical document' if multimodal_analysis.get('is_medical') else 'General document'}
-• Multimodal correlation: {multimodal_analysis.get('correlation_score', 0.0):.2f}
-• Word count: ~{len(full_text.split()):,}
-• Character count: {len(full_text):,}"""
-            
-            return summary + "\n\n" + doc_stats
-            
-        except Exception as e:
-            logger.error(f"Error generating optimized summary: {e}")
-            # Fallback to text-only summary
-            return f"**PDF Content Summary:**\n\n{full_text[:3000]}{'...' if len(full_text) > 3000 else ''}"
+        return anatomy_terms[:3]  # Return max 3 terms
     
     @tool(
         name="get_weather",

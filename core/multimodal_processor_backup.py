@@ -474,20 +474,15 @@ class MultiModalProcessor:
             ImageCategory.GENERAL_IMAGE: 0.0
         }
         
-        # Prescription scoring - enhanced
+        # Prescription scoring
         if text_features.has_prescription_format:
-            category_scores[ImageCategory.PRESCRIPTION] += 0.6  # Increased weight
+            category_scores[ImageCategory.PRESCRIPTION] += 0.4
         if visual_features.has_header_layout and visual_features.has_signature_area:
-            category_scores[ImageCategory.PRESCRIPTION] += 0.4  # Increased weight
+            category_scores[ImageCategory.PRESCRIPTION] += 0.3
         if text_features.medicine_count > 0:
-            category_scores[ImageCategory.PRESCRIPTION] += 0.3  # Increased weight
+            category_scores[ImageCategory.PRESCRIPTION] += 0.2
         if visual_features.has_table_layout:
-            category_scores[ImageCategory.PRESCRIPTION] += 0.2  # Increased weight
-        # Additional prescription indicators
-        if any(term in text_features.raw_text.lower() for term in ['patient', 'age', 'sex', 'bp', 'weight', 'height']):
-            category_scores[ImageCategory.PRESCRIPTION] += 0.2
-        if any(term in text_features.raw_text.lower() for term in ['prescription', 'medicine', 'advice', 'history']):
-            category_scores[ImageCategory.PRESCRIPTION] += 0.2
+            category_scores[ImageCategory.PRESCRIPTION] += 0.1
             
         # Medicine package scoring
         if any(term in text_features.raw_text.lower() for term in ['manufactured', 'batch', 'expiry', 'mfg']):
@@ -503,13 +498,13 @@ class MultiModalProcessor:
         if visual_features.has_table_layout and not visual_features.has_signature_area:
             category_scores[ImageCategory.LAB_RESULTS] += 0.3
             
-        # Anatomy diagram scoring - reduced to prevent false positives
+        # Anatomy diagram scoring
         if visual_features.is_diagram:
-            category_scores[ImageCategory.ANATOMY_DIAGRAM] += 0.3  # Reduced
-        if any(term in text_features.raw_text.lower() for term in ['anatomy', 'organ', 'muscle', 'bone', 'human body', 'body part']):
-            category_scores[ImageCategory.ANATOMY_DIAGRAM] += 0.2  # Reduced
+            category_scores[ImageCategory.ANATOMY_DIAGRAM] += 0.4
+        if any(term in text_features.raw_text.lower() for term in ['anatomy', 'organ', 'muscle', 'bone']):
+            category_scores[ImageCategory.ANATOMY_DIAGRAM] += 0.3
         if visual_features.has_medical_symbols:
-            category_scores[ImageCategory.ANATOMY_DIAGRAM] += 0.1  # Reduced
+            category_scores[ImageCategory.ANATOMY_DIAGRAM] += 0.2
             
         # Medical chart scoring
         if visual_features.is_chart:
@@ -709,18 +704,14 @@ class MultiModalProcessor:
             'tests': []
         }
         
-        # Medicine patterns - improved to catch more prescription formats
+        # Medicine patterns
         medicine_patterns = [
-            r'tab\.?\s+(\w+)',  # Tab. or Tab
-            r'syp\.?\s+(\w+)',  # Syp. or Syp
-            r'cap\.?\s+(\w+)',  # Cap. or Cap
-            r'inj\.?\s+(\w+)',  # Inj. or Inj
-            r'(\w+)\s+\d+\s*mg',  # Medicine name with mg
-            r'(\w+)\s+\d+\s*ml',  # Medicine name with ml
-            r'(\w+)\s+\d+\s*mg/\s*\w+',  # Medicine with mg/other unit
-            r'(\w+)\s+\d+\s*mg\s*/\s*\w+',  # Medicine with mg / other unit
-            r'(\w+)\s+\d+\s*mg\s*/\s*\w+\s*mg',  # Medicine with mg/mg format
-            r'(\w+)\s+\d+\s*mg\s*/\s*\w+\s*mg\s*/\s*\w+',  # Complex medicine format
+            r'tab\s+(\w+)',
+            r'syp\s+(\w+)',
+            r'cap\s+(\w+)',
+            r'inj\s+(\w+)',
+            r'(\w+)\s+\d+\s*mg',
+            r'(\w+)\s+\d+\s*ml'
         ]
         
         for pattern in medicine_patterns:
@@ -782,34 +773,20 @@ class MultiModalProcessor:
         """Check if text has prescription format"""
         text_lower = text.lower()
         
-        # Look for prescription-specific patterns - enhanced
+        # Look for prescription-specific patterns
         prescription_indicators = [
             r'dr\.?\s+\w+',  # Doctor name
             r'rx\s*:',       # RX symbol
-            r'tab\.?\s+\w+',    # Tablet (with or without period)
-            r'syp\.?\s+\w+',    # Syrup (with or without period)
-            r'cap\.?\s+\w+',    # Capsule (with or without period)
-            r'inj\.?\s+\w+',    # Injection (with or without period)
+            r'tab\s+\w+',    # Tablet
+            r'syp\s+\w+',    # Syrup
             r'\d+-\d+-\d+',  # Dosage pattern like 1-0-1
-            r'for\s+\d+\s+days', # Duration
-            r'patient\s+id',  # Patient ID
-            r'age\s*:\s*\d+',  # Age field
-            r'sex\s*:\s*\w+',  # Sex field
-            r'bp\s*:\s*\d+/\d+',  # Blood pressure
-            r'weight\s*:\s*\d+',  # Weight
-            r'height\s*:\s*\d+',  # Height
-            r'glucose\s*:\s*\d+',  # Glucose level
-            r'prescription',  # Prescription keyword
-            r'medicine',  # Medicine keyword
-            r'advice',  # Advice section
-            r'physical\s+findings',  # Physical findings
-            r'history',  # History section
+            r'for\s+\d+\s+days' # Duration
         ]
         
         matches = sum(1 for pattern in prescription_indicators 
                      if re.search(pattern, text_lower))
         
-        return matches >= 3  # Lowered threshold but require more matches
+        return matches >= 2
 
     def _has_lab_format(self, text: str) -> bool:
         """Check if text has lab results format"""
