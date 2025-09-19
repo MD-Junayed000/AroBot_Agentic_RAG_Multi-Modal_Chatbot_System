@@ -37,122 +37,83 @@ class Tool:
     function: Callable
     parameters: List[ToolParameter]
     category: str = "general"
-    priority: int = 1  # Higher priority tools are preferred
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert tool to dictionary for LLM consumption"""
-        return {
-            "name": self.name,
-            "description": self.description,
-            "category": self.category,
-            "priority": self.priority,
-            "parameters": [
-                {
-                    "name": p.name,
-                    "type": p.type,
-                    "description": p.description,
-                    "required": p.required,
-                    "default": p.default
-                }
-                for p in self.parameters
-            ]
-        }
+    priority: int = 1
+
+@dataclass
+class RAGCacheEntry:
+    context: List[str]
+    timestamp: float
+    query_hash: str
 
 @dataclass
 class AgentResponse:
     response: str
     tools_used: List[str]
-    session_id: Optional[str] = None
-    sources: Dict[str, Any] = None
+    session_id: Optional[str]
+    sources: Optional[Dict[str, Any]] = None
     status: str = "success"
 
-@dataclass
-class RAGCacheEntry:
-    """Cache entry for RAG results with metadata"""
-    query_hash: str
-    context_chunks: List[str]
-    query_type: str
-    timestamp: float
-    hit_count: int = 1
-
 class ToolRegistry:
-    """Registry for managing tools with automatic discovery and validation"""
+    """Centralized tool registry"""
     
     def __init__(self):
         self.tools: Dict[str, Tool] = {}
-        self.categories: Dict[str, List[str]] = {}
     
     def register_tool(self, tool: Tool):
-        """Register a tool in the registry"""
+        """Register a tool"""
         self.tools[tool.name] = tool
-        
-        # Update category index
-        if tool.category not in self.categories:
-            self.categories[tool.category] = []
-        if tool.name not in self.categories[tool.category]:
-            self.categories[tool.category].append(tool.name)
-        
-        logger.info(f"Registered tool: {tool.name} (category: {tool.category})")
+        logger.debug(f"Registered tool: {tool.name}")
     
     def get_tool(self, name: str) -> Optional[Tool]:
         """Get a tool by name"""
         return self.tools.get(name)
     
+    def list_tools(self) -> List[str]:
+        """List all available tools"""
+        return list(self.tools.keys())
+    
     def get_tools_by_category(self, category: str) -> List[Tool]:
-        """Get all tools in a category"""
-        tool_names = self.categories.get(category, [])
-        return [self.tools[name] for name in tool_names]
-    
-    def get_all_tools(self) -> List[Tool]:
-        """Get all registered tools"""
-        return list(self.tools.values())
-    
-    def get_tool_descriptions(self, category: Optional[str] = None) -> str:
-        """Get formatted descriptions of tools"""
-        tools = self.get_tools_by_category(category) if category else self.get_all_tools()
-        
-        descriptions = []
-        for tool in sorted(tools, key=lambda t: (-t.priority, t.name)):
-            params = ", ".join([
-                f"{p.name}({p.type}): {p.description}" + ("" if p.required else " [optional]")
-                for p in tool.parameters
-            ])
-            descriptions.append(
-                f"🔧 {tool.name} [{tool.category}] (priority: {tool.priority})\n"
-                f"   📝 {tool.description}\n"
-                f"   📊 Parameters: {params or 'None'}"
-            )
-        
-        return "\n\n".join(descriptions)
+        """Get tools by category"""
+        return [tool for tool in self.tools.values() if tool.category == category]
 
 def tool(name: str, description: str, category: str = "general", priority: int = 1):
     """Decorator to register tool functions"""
     def decorator(func: Callable):
         # Extract parameter information from function signature
         sig = inspect.signature(func)
+        parameters = []
+        
+        # Get type hints
         type_hints = get_type_hints(func)
         
-        parameters = []
         for param_name, param in sig.parameters.items():
-            if param_name in ['self', 'cls']:
+            # Skip 'self' parameter
+            if param_name == 'self':
                 continue
-                
-            param_type = type_hints.get(param_name, str).__name__
-            required = param.default == inspect.Parameter.empty
-            default = None if required else param.default
             
-            # Generate description from parameter name
-            param_desc = param_name.replace('_', ' ').title()
+            # Determine parameter type
+            param_type = type_hints.get(param_name, str)
+            if hasattr(param_type, '__name__'):
+                type_str = param_type.__name__
+            else:
+                type_str = str(param_type)
+            
+            # Determine if required (has no default value)
+            required = param.default == inspect.Parameter.empty
+            default_val = None if required else param.default
+            
+            # Create parameter description (could be enhanced with docstring parsing)
+            param_desc = f"Parameter {param_name} of type {type_str}"
             
             parameters.append(ToolParameter(
                 name=param_name,
-                type=param_type,
+                type=type_str,
                 description=param_desc,
                 required=required,
-                default=default
+                default=default_val
             ))
         
-        # Create tool object
+        # Create tool object and attach as metadata
         tool_obj = Tool(
             name=name,
             description=description,
@@ -162,8 +123,9 @@ def tool(name: str, description: str, category: str = "general", priority: int =
             priority=priority
         )
         
-        # Store tool metadata on function
+        # Attach tool metadata to function
         func._tool_metadata = tool_obj
+
         return func
     
     return decorator
@@ -211,173 +173,140 @@ class LLMAgent:
     
     def _find_similar_query(self, query: str) -> Optional[str]:
         """Find similar query in cache using sequence matching"""
-        normalized_query = query.lower().strip()
-        
-        # Check if we have a cached similar query
-        if normalized_query in self._query_similarity_cache:
-            return self._query_similarity_cache[normalized_query]
-        
-        # Find most similar query in cache
+        query_lower = query.lower().strip()
         best_match = None
-        best_similarity = 0.0
+        best_ratio = 0
         
-        for cached_query in self._query_similarity_cache.keys():
-            similarity = SequenceMatcher(None, normalized_query, cached_query).ratio()
-            if similarity > best_similarity and similarity >= self._similarity_threshold:
-                best_similarity = similarity
-                best_match = cached_query
+        for cached_query_hash, cached_query in self._query_similarity_cache.items():
+            ratio = SequenceMatcher(None, query_lower, cached_query.lower()).ratio()
+            if ratio > best_ratio and ratio >= self._similarity_threshold:
+                best_ratio = ratio
+                best_match = cached_query_hash
         
-        if best_match:
-            self._query_similarity_cache[normalized_query] = best_match
-            logger.info(f"Found similar query: {similarity:.2f} similarity")
-            return best_match
-        
-        return None
+        return best_match
     
     def _get_cached_rag_context(self, query: str, query_type: str) -> Optional[List[str]]:
-        """Get cached RAG context if available and not expired"""
-        query_hash = self._generate_query_hash(query, query_type)
-        current_time = time.time()
-        
-        # Check direct cache hit
-        if query_hash in self._rag_cache:
-            entry = self._rag_cache[query_hash]
-            if current_time - entry.timestamp < self._rag_cache_ttl:
-                entry.hit_count += 1
-                logger.info(f"RAG cache hit for query: {query[:50]}...")
-                return entry.context_chunks
-            else:
-                # Remove expired entry
-                del self._rag_cache[query_hash]
-        
-        # Check for similar query
-        similar_query = self._find_similar_query(query)
-        if similar_query:
-            similar_hash = self._generate_query_hash(similar_query, query_type)
-            if similar_hash in self._rag_cache:
+        """Get cached RAG context if available and valid"""
+        try:
+            # Check for exact match first
+            query_hash = self._generate_query_hash(query, query_type)
+            
+            if query_hash in self._rag_cache:
+                entry = self._rag_cache[query_hash]
+                if time.time() - entry.timestamp < self._rag_cache_ttl:
+                    logger.info(f"RAG cache hit (exact): {query[:30]}...")
+                    return entry.context
+                else:
+                    # Expired entry
+                    del self._rag_cache[query_hash]
+            
+            # Check for similar queries
+            similar_hash = self._find_similar_query(query)
+            if similar_hash and similar_hash in self._rag_cache:
                 entry = self._rag_cache[similar_hash]
-                if current_time - entry.timestamp < self._rag_cache_ttl:
-                    entry.hit_count += 1
-                    logger.info(f"RAG cache hit for similar query: {similarity:.2f} similarity")
-                    return entry.context_chunks
-        
-        return None
+                if time.time() - entry.timestamp < self._rag_cache_ttl:
+                    logger.info(f"RAG cache hit (similar): {query[:30]}...")
+                    return entry.context
+            
+            return None
+        except Exception as e:
+            logger.warning(f"Error checking RAG cache: {e}")
+            return None
     
-    def _cache_rag_context(self, query: str, query_type: str, context_chunks: List[str]):
-        """Cache RAG context with TTL and size management"""
-        query_hash = self._generate_query_hash(query, query_type)
-        current_time = time.time()
-        
-        # Clean expired entries
-        expired_keys = [
-            key for key, entry in self._rag_cache.items()
-            if current_time - entry.timestamp > self._rag_cache_ttl
-        ]
-        for key in expired_keys:
-            del self._rag_cache[key]
-        
-        # Manage cache size
-        if len(self._rag_cache) >= self._max_rag_cache_size:
-            # Remove least recently used entries (simple LRU by hit count)
-            sorted_entries = sorted(
-                self._rag_cache.items(),
-                key=lambda x: (x[1].hit_count, x[1].timestamp)
-            )
-            # Remove bottom 20% of entries
-            remove_count = self._max_rag_cache_size // 5
-            for key, _ in sorted_entries[:remove_count]:
+    def _cache_rag_context(self, query: str, query_type: str, context: List[str]):
+        """Cache RAG context with size management"""
+        try:
+            # Clean up expired entries first
+            current_time = time.time()
+            expired_keys = [
+                key for key, entry in self._rag_cache.items()
+                if current_time - entry.timestamp >= self._rag_cache_ttl
+            ]
+            for key in expired_keys:
                 del self._rag_cache[key]
-        
-        # Add new entry
-        self._rag_cache[query_hash] = RAGCacheEntry(
-            query_hash=query_hash,
-            context_chunks=context_chunks,
-            query_type=query_type,
-            timestamp=current_time
-        )
-        
-        # Update similarity cache
-        self._query_similarity_cache[query.lower().strip()] = query.lower().strip()
+                if key in self._query_similarity_cache:
+                    del self._query_similarity_cache[key]
+            
+            # If still at capacity, remove oldest entries
+            if len(self._rag_cache) >= self._max_rag_cache_size:
+                # Remove 20% of oldest entries
+                sorted_entries = sorted(
+                    self._rag_cache.items(),
+                    key=lambda x: x[1].timestamp
+                )
+                remove_count = max(1, len(sorted_entries) // 5)
+                for key, _ in sorted_entries[:remove_count]:
+                    del self._rag_cache[key]
+                    if key in self._query_similarity_cache:
+                        del self._query_similarity_cache[key]
+            
+            # Cache the new entry
+            query_hash = self._generate_query_hash(query, query_type)
+            self._rag_cache[query_hash] = RAGCacheEntry(
+                context=context,
+                timestamp=current_time,
+                query_hash=query_hash
+            )
+            self._query_similarity_cache[query_hash] = query.lower().strip()
+            
+            logger.debug(f"Cached RAG context: {query[:30]}... (cache size: {len(self._rag_cache)})")
+        except Exception as e:
+            logger.warning(f"Error caching RAG context: {e}")
     
+    def _smart_context_filtering(self, query: str, raw_context: List[str]) -> List[str]:
+        """Apply smart filtering to RAG context chunks"""
+        if not raw_context:
+            return []
+        
+        query_lower = query.lower()
+        query_terms = set(query_lower.split())
+        
+        # Score each chunk based on relevance
+        scored_chunks = []
+        for chunk in raw_context:
+            chunk_lower = chunk.lower()
+            
+            # Calculate term overlap score
+            chunk_terms = set(chunk_lower.split())
+            overlap_score = len(query_terms.intersection(chunk_terms)) / len(query_terms) if query_terms else 0
+            
+            # Boost score for exact phrase matches
+            phrase_score = 0
+            if len(query_lower) > 10:  # Only for longer queries
+                if query_lower in chunk_lower:
+                    phrase_score = 0.5
+            
+            # Medical relevance boost
+            medical_terms = ["medicine", "drug", "treatment", "symptom", "disease", "health", "medical"]
+            medical_score = sum(1 for term in medical_terms if term in chunk_lower) * 0.1
+            
+            total_score = overlap_score + phrase_score + medical_score
+            scored_chunks.append((chunk, total_score))
+        
+        # Sort by score and return top chunks
+        scored_chunks.sort(key=lambda x: x[1], reverse=True)
+        filtered_chunks = [chunk for chunk, score in scored_chunks if score > 0.1]  # Minimum relevance threshold
+        
+        return filtered_chunks
+
     def _optimize_context_chunks(self, context_chunks: List[str], max_chunks: int = 3, max_chars: int = 800) -> List[str]:
-        """Optimize context chunks by limiting size and count"""
+        """Optimize context chunks for token efficiency"""
         if not context_chunks:
             return []
         
         optimized_chunks = []
-        total_chars = 0
-        
-        for chunk in context_chunks:
-            if len(optimized_chunks) >= max_chunks:
-                break
-                
-            # Truncate chunk if too long
+        for chunk in context_chunks[:max_chunks]:  # Limit number of chunks
             if len(chunk) > max_chars:
-                chunk = chunk[:max_chars] + "..."
-            
-            # Check if adding this chunk would exceed reasonable limits
-            if total_chars + len(chunk) > max_chunks * max_chars:
-                break
-                
+                # Truncate but try to end at sentence boundary
+                truncated = chunk[:max_chars]
+                last_period = truncated.rfind('.')
+                if last_period > max_chars * 0.7:  # If we can find a period in the last 30%
+                    chunk = truncated[:last_period + 1]
+                else:
+                    chunk = truncated + "..."
             optimized_chunks.append(chunk)
-            total_chars += len(chunk)
         
-        logger.info(f"Optimized context: {len(optimized_chunks)} chunks, {total_chars} chars")
         return optimized_chunks
-    
-    def _smart_context_filtering(self, query: str, context_chunks: List[str]) -> List[str]:
-        """Filter context chunks based on query type and relevance"""
-        if not context_chunks:
-            return []
-        
-        query_lower = query.lower()
-        filtered_chunks = []
-        
-        # Define query type patterns
-        medicine_patterns = ["medicine", "drug", "medication", "tablet", "capsule", "dosage", "mg", "ml"]
-        symptom_patterns = ["symptom", "pain", "fever", "headache", "ache", "hurt"]
-        disease_patterns = ["disease", "condition", "disorder", "syndrome", "infection"]
-        
-        # Determine query type
-        is_medicine_query = any(pattern in query_lower for pattern in medicine_patterns)
-        is_symptom_query = any(pattern in query_lower for pattern in symptom_patterns)
-        is_disease_query = any(pattern in query_lower for pattern in disease_patterns)
-        
-        for chunk in context_chunks:
-            chunk_lower = chunk.lower()
-            relevance_score = 0
-            
-            # Medicine-specific filtering
-            if is_medicine_query:
-                if any(term in chunk_lower for term in ["dose", "dosage", "indication", "contraindication", "side effect"]):
-                    relevance_score += 3
-                if any(term in chunk_lower for term in ["tablet", "capsule", "syrup", "injection"]):
-                    relevance_score += 2
-            
-            # Symptom-specific filtering
-            if is_symptom_query:
-                if any(term in chunk_lower for term in ["symptom", "sign", "manifestation", "presentation"]):
-                    relevance_score += 3
-                if any(term in chunk_lower for term in ["cause", "etiology", "pathophysiology"]):
-                    relevance_score += 2
-            
-            # Disease-specific filtering
-            if is_disease_query:
-                if any(term in chunk_lower for term in ["disease", "condition", "disorder", "syndrome"]):
-                    relevance_score += 3
-                if any(term in chunk_lower for term in ["treatment", "therapy", "management"]):
-                    relevance_score += 2
-            
-            # General medical relevance
-            if any(term in chunk_lower for term in ["clinical", "medical", "health", "patient"]):
-                relevance_score += 1
-            
-            # Only include chunks with sufficient relevance
-            if relevance_score >= 1:
-                filtered_chunks.append(chunk)
-        
-        logger.info(f"Smart filtering: {len(context_chunks)} -> {len(filtered_chunks)} chunks")
-        return filtered_chunks
 
     # Tool definitions using decorators
     @tool(
@@ -388,16 +317,90 @@ class LLMAgent:
     )
     @traceable(name="analyze_text_tool")
     async def _tool_analyze_text(self, query: str, session_id: Optional[str] = None) -> Dict[str, Any]:
-        """Analyze text using optimized RAG → LLM pipeline for medical queries"""
+        """Analyze text using optimized RAG → LLM pipeline with conversation context"""
         try:
+            # **CRITICAL FIX: Get conversation context first**
+            conversation_context = ""
+            if session_id:
+                try:
+                    context_data = self.mcp.get_conversation_context(session_id)
+                    recent_messages = context_data.get("recent_messages", [])
+                    
+                    # Format conversation history for LLM context
+                    context_parts = []
+                    for msg in recent_messages[-6:]:  # Last 6 messages (3 exchanges)
+                        role = msg.get("role", "")
+                        content = msg.get("content", "")
+                        if role and content and role != "system":  # Skip system messages
+                            context_parts.append(f"{role.title()}: {content}")
+                    
+                    if context_parts:
+                        conversation_context = "\n".join(context_parts)
+                        logger.info(f"Using conversation context with {len(context_parts)} messages")
+                except Exception as e:
+                    logger.warning(f"Failed to get conversation context: {e}")
+            
             # Check for greetings and simple queries
             query_lower = query.lower().strip()
             greeting_terms = ["hello", "hi", "hey", "good morning", "good evening", "how are you", "what's up"]
             
             if any(term in query_lower for term in greeting_terms):
-                # Use LLM handler directly for greetings
-                response = self.llm.greeting_response(query)
-                return {"response": response, "query_type": "greeting"}
+                # For greetings, use conversation context to provide personalized response
+                if conversation_context:
+                    # Extract user name from conversation if mentioned
+                    name_match = None
+                    for line in conversation_context.split('\n'):
+                        if 'name is' in line.lower() or 'i am' in line.lower() or "i'm" in line.lower():
+                            # Simple name extraction
+                            words = line.lower().split()
+                            for i, word in enumerate(words):
+                                if word in ['name', 'am', "i'm"] and i + 1 < len(words):
+                                    potential_name = words[i + 1].strip('.,!?')
+                                    if potential_name.isalpha() and len(potential_name) > 1:
+                                        name_match = potential_name.title()
+                                        break
+                            if name_match:
+                                break
+                    
+                    greeting_response = self.llm.greeting_response(query)
+                    if name_match:
+                        greeting_response = greeting_response.replace("Hello!", f"Hello {name_match}!")
+                        greeting_response = greeting_response.replace("Good morning!", f"Good morning {name_match}!")
+                        greeting_response = greeting_response.replace("Good evening!", f"Good evening {name_match}!")
+                        greeting_response = greeting_response.replace("Good afternoon!", f"Good afternoon {name_match}!")
+                    
+                    return {"response": greeting_response, "query_type": "greeting_with_context"}
+                else:
+                    response = self.llm.greeting_response(query)
+                    return {"response": response, "query_type": "greeting"}
+            
+            # Check for personal/conversational queries that need context
+            personal_indicators = [
+                "my name", "do you know", "remember", "what did i say", "earlier", "before",
+                "we talked", "i told you", "you know me", "who am i", "what is my"
+            ]
+            
+            is_personal_query = any(indicator in query_lower for indicator in personal_indicators)
+            
+            if is_personal_query and conversation_context:
+                # Use conversation context to answer personal questions
+                personal_prompt = f"""
+                Based on our conversation history, answer the user's question.
+                
+                CONVERSATION HISTORY:
+                {conversation_context}
+                
+                CURRENT QUESTION: {query}
+                
+                Provide a helpful response based on what we've discussed. If you don't have the specific information from our conversation, say so politely.
+                """
+                
+                response = self.llm.text_gen.generate_response(
+                    personal_prompt,
+                    system_prompt="You are a helpful medical assistant with access to conversation history. Use the context to provide personalized responses."
+                )
+                
+                return {"response": response, "query_type": "personal_with_context"}
             
             # Check for "what it does" or similar capability questions
             if any(term in query_lower for term in ["what it does", "what do you do", "what can you do", "your capabilities"]):
@@ -451,14 +454,14 @@ class LLMAgent:
                         logger.warning(f"RAG context gathering failed: {e}")
                         rag_context = []
                 
-                # Step 6: Use LLM to generate response with optimized RAG context
+                # Step 6: Use LLM to generate response with both RAG and conversation context
                 if rag_context:
                     # Format RAG context
                     context_text = "\n\n---MEDICAL KNOWLEDGE---\n".join(rag_context)
                     
-                    # Create comprehensive prompt with RAG context
+                    # **ENHANCED PROMPT WITH CONVERSATION CONTEXT**
                     rag_prompt = f"""
-                    Using the provided MEDICAL KNOWLEDGE context, answer the following medical question comprehensively and accurately.
+                    Using the provided MEDICAL KNOWLEDGE context and conversation history, answer the following medical question comprehensively and accurately.
                     
                     Structure your response appropriately based on the question type:
                     - For medicine queries: Include uses, dosage, side effects, contraindications
@@ -468,9 +471,16 @@ class LLMAgent:
                     MEDICAL KNOWLEDGE CONTEXT:
                     {context_text}
                     
-                    QUESTION: {query}
+                    {"CONVERSATION HISTORY:" if conversation_context else ""}
+                    {conversation_context if conversation_context else ""}
                     
-                    Important: Base your response primarily on the provided medical knowledge context. If the context doesn't contain specific information needed to answer the question, indicate this clearly and provide safe general guidance. Always recommend consulting a healthcare provider for personalized medical advice.
+                    CURRENT QUESTION: {query}
+                    
+                    Important: 
+                    1. Base your response primarily on the provided medical knowledge context
+                    2. Use conversation history to provide personalized and contextual responses
+                    3. If the context doesn't contain specific information needed, indicate this clearly
+                    4. Always recommend consulting a healthcare provider for personalized medical advice
                     """
                     
                     # Generate response using medical system prompt
@@ -485,75 +495,71 @@ class LLMAgent:
                     
                     return {
                         "response": medical_response, 
-                        "query_type": "medical_with_rag",
+                        "query_type": "medical_with_rag_and_context",
                         "rag_sources": len(rag_context),
+                        "has_conversation_context": bool(conversation_context),
                         "cache_hit": True if self._get_cached_rag_context(query, query_type) else False
                     }
                 
                 else:
-                    # Fallback: Use medical agent without RAG context
-                    logger.info("No RAG context found, using medical agent fallback")
+                    # Fallback: Use medical agent with conversation context
+                    logger.info("No RAG context found, using medical agent fallback with conversation context")
+                    
+                    # Create enhanced prompt with conversation context
+                    if conversation_context:
+                        enhanced_query = f"""
+                        CONVERSATION HISTORY:
+                        {conversation_context}
+                        
+                        CURRENT MEDICAL QUESTION: {query}
+                        
+                        Please answer the medical question taking into account our conversation history for personalized context.
+                        """
+                    else:
+                        enhanced_query = query
+                    
                     from agents.medical_agent import MedicalAgent
                     agent = MedicalAgent()
-                    result = agent.handle_text_query(query, session_id=session_id)
-                    result["query_type"] = "medical_fallback"
+                    result = agent.handle_text_query(enhanced_query, session_id=session_id)
+                    result["query_type"] = "medical_fallback_with_context"
+                    result["has_conversation_context"] = bool(conversation_context)
                     return result
             
-            # Check for anatomy/educational questions
-            elif any(term in query_lower for term in ["anatomy", "human body", "tell about", "explain", "what is"]):
-                # Use general knowledge handler with potential RAG context
-                try:
-                    # Check cache for educational queries
-                    rag_context = self._get_cached_rag_context(query, "educational")
-                    
-                    if not rag_context:
-                        raw_context = self.llm.gather_rag_context(query, limit=2)
-                        if raw_context:
-                            # Apply smart filtering and optimization
-                            filtered_context = self._smart_context_filtering(query, raw_context)
-                            rag_context = self._optimize_context_chunks(filtered_context, max_chunks=2, max_chars=600)
-                            self._cache_rag_context(query, "educational", rag_context)
-                    
-                    if rag_context:
-                        context_text = "\n".join(rag_context)
-                        educational_prompt = f"""
-                        Using the provided context, answer the educational question about {query}.
-                        
-                        CONTEXT:
-                        {context_text}
-                        
-                        QUESTION: {query}
-                        
-                        Provide a clear, educational response. If the context doesn't fully answer the question, supplement with general knowledge while indicating what comes from the provided context.
-                        """
-                        
-                        response = self.llm.text_gen.generate_response(
-                            educational_prompt,
-                            system_prompt=get_system_prompt("general")
-                        )
-                        return {"response": response, "query_type": "educational_with_context"}
-                    else:
-                        response = self.llm.answer_general_knowledge(query)
-                        return {"response": response, "query_type": "educational"}
-                except Exception as e:
-                    logger.warning(f"Educational query with context failed: {e}")
-                    response = self.llm.answer_general_knowledge(query)
-                    return {"response": response, "query_type": "educational"}
-            
+            # For general conversational queries, use conversation context
             else:
-                # General query - use basic LLM response
-                response = self.llm.generate_text_response(query)
-                return {"response": response, "query_type": "general"}
+                logger.info("Processing general query with conversation context")
                 
+                if conversation_context:
+                    general_prompt = f"""
+                    Based on our conversation history, respond to the user's message naturally and helpfully.
+                    
+                    CONVERSATION HISTORY:
+                    {conversation_context}
+                    
+                    CURRENT MESSAGE: {query}
+                    
+                    Provide a natural, conversational response. If this seems like a medical question, offer to help with medical information.
+                    """
+                    
+                    response = self.llm.text_gen.generate_response(
+                        general_prompt,
+                        system_prompt="You are a helpful medical assistant. Use conversation history to provide personalized, contextual responses."
+                    )
+                    
+                    return {"response": response, "query_type": "general_with_context"}
+                else:
+                    # No context available, provide general response
+                    response = self.llm.text_gen.generate_response(
+                        query,
+                        system_prompt="You are a helpful medical assistant. Provide a brief, helpful response."
+                    )
+                    
+                    return {"response": response, "query_type": "general"}
+            
         except Exception as e:
-            logger.exception(f"Error in analyze_text tool: {e}")
-            # Fallback to basic LLM response
-            try:
-                response = self.llm.generate_text_response(query)
-                return {"response": response, "error": f"Fallback response due to: {str(e)}"}
-            except Exception as e2:
-                return {"error": f"Complete failure: {str(e)} | {str(e2)}"}
-    
+            logger.error(f"Error in analyze_text tool: {e}")
+            return {"error": f"Text analysis failed: {str(e)}", "query_type": "error"}
+
     @tool(
         name="analyze_image", 
         description="Analyze images including prescriptions, medical diagrams, anatomy charts, or general images. Performs OCR and visual analysis with intelligent classification.",
@@ -1600,9 +1606,10 @@ Keep the summary clear and informative."""
         }
     
     def clear_rag_cache(self):
-        """Clear RAG cache for testing or memory management"""
+        """Clear RAG cache"""
         self._rag_cache.clear()
         self._query_similarity_cache.clear()
+
         logger.info("RAG cache cleared")
 
     @traceable(name="process_request")
@@ -1637,7 +1644,7 @@ Keep the summary clear and informative."""
             # Ask LLM to decide which tools to use
             tool_selection = await self._select_tools(input_description, conversation_context)
             
-            # Execute selected tools
+            # Execute selected tools - **PASS SESSION_ID TO TOOLS**
             results = await self._execute_tools(tool_selection, text_input, image_data, pdf_data, session_id)
             
             # Generate final response

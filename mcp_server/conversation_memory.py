@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import uuid
 import logging
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Any, Optional
@@ -16,8 +17,33 @@ class ConversationMemory:
     """Manages conversation memory and context for users (persisted to /memory)"""
 
     def __init__(self, memory_dir: str = "memory"):
-        self.memory_dir = Path(memory_dir)
-        self.memory_dir.mkdir(exist_ok=True)
+        # Use absolute path relative to project root to avoid working directory issues
+        if not os.path.isabs(memory_dir):
+            # Get the project root directory (where app.py or main files are located)
+            current_dir = Path(__file__).parent.parent  # Go up from mcp_server/ to project root
+            self.memory_dir = current_dir / memory_dir
+        else:
+            self.memory_dir = Path(memory_dir)
+        
+        # Create directory with better error handling
+        try:
+            self.memory_dir.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Memory directory initialized at: {self.memory_dir.absolute()}")
+            
+            # Test write permissions
+            test_file = self.memory_dir / ".test_write"
+            try:
+                test_file.write_text("test")
+                test_file.unlink()  # Remove test file
+                logger.debug("Memory directory write permissions verified")
+            except Exception as e:
+                logger.error(f"Memory directory not writable: {e}")
+                raise
+                
+        except Exception as e:
+            logger.error(f"Failed to initialize memory directory {self.memory_dir}: {e}")
+            raise
+            
         self.active_sessions: Dict[str, Dict[str, Any]] = {}
         self.max_memory_days = 30
         self.summary_chunk = 120  # how many old turns to summarize at once
@@ -39,7 +65,14 @@ class ConversationMemory:
 
         }
         self.active_sessions[session_id] = data
-        self._save_session(session_id)
+        
+        # Ensure session is saved and log the result
+        save_success = self._save_session(session_id)
+        if save_success:
+            logger.info(f"Session {session_id} created and saved successfully")
+        else:
+            logger.error(f"Failed to save session {session_id} to disk")
+            
         return session_id
 
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
@@ -98,11 +131,13 @@ class ConversationMemory:
                  session["long_term_summary"] = ((prefix + " ; " if prefix else "") + new_sum)[:30000]
                  session["messages"] = keep
 
-             # persist every write
-             self._save_session(session_id)
-             return True
+             # persist every write with better error handling
+             save_success = self._save_session(session_id)
+             if not save_success:
+                 logger.warning(f"Failed to persist session {session_id} after adding message")
+             return save_success
          except Exception as e:
-             logger.error(f"Error adding message: {e}")
+             logger.error(f"Error adding message to session {session_id}: {e}")
              return False
 
 
@@ -137,8 +172,7 @@ class ConversationMemory:
             s["prescription_history"].append(rec)
             if len(s["prescription_history"]) > 12:
                 s["prescription_history"] = s["prescription_history"][-12:]
-            self._save_session(session_id)
-            return True
+            return self._save_session(session_id)
         except Exception as e:
             logger.error(f"Error adding prescription: {e}")
             return False
@@ -155,7 +189,7 @@ class ConversationMemory:
                 return []
             return s.get("prescription_history", [])
         except Exception as e:
-            logger.error(f"Error reading prescription history: {e}")
+            logger.error(f"Error getting prescriptions: {e}")
             return []
 
     def add_medical_query(self, session_id: str, query: str, response: str, query_type: str = "general") -> bool:
@@ -176,15 +210,13 @@ class ConversationMemory:
                 "type": query_type,
             }
             s["medical_queries"].append(rec)
-            if len(s["medical_queries"]) > 40:
-                s["medical_queries"] = s["medical_queries"][-40:]
-            self._save_session(session_id)
-            return True
+            if len(s["medical_queries"]) > 20:
+                s["medical_queries"] = s["medical_queries"][-20:]
+            return self._save_session(session_id)
         except Exception as e:
-            logger.error(f"Error adding query: {e}")
+            logger.error(f"Error adding medical query: {e}")
             return False
 
-    # --------- summaries --------- #
     def get_context_summary(self, session_id: str) -> Dict[str, Any]:
         try:
             # Validate session_id first
@@ -195,42 +227,86 @@ class ConversationMemory:
             s = self.get_session(session_id)
             if not s:
                 return {}
+
+            msgs = s.get("messages", [])
+            rx = s.get("prescription_history", [])
+
             return {
                 "session_id": session_id,
-                "user_id": s.get("user_id"),
                 "created_at": s.get("created_at"),
                 "last_activity": s.get("last_activity"),
-                "message_count": len(s.get("messages", [])),
-                "prescription_count": len(s.get("prescription_history", [])),
-                "query_count": len(s.get("medical_queries", [])),
+                "message_count": len(msgs),
+                "prescription_count": len(rx),
                 "recent_topics": self._extract_recent_topics(s),
             }
         except Exception as e:
-            logger.error(f"Error summarizing context: {e}")
+            logger.error(f"Error getting context summary: {e}")
             return {}
 
     def _extract_recent_topics(self, session: Dict[str, Any]) -> List[str]:
-        topics: List[str] = []
-        for m in session.get("messages", [])[-12:]:
-            if m.get("role") == "user":
-                t = (m.get("content") or "").lower()
-                for kw in ["prescription", "medicine", "medication", "treatment", "symptom", "diagnosis", "therapy"]:
-                    if kw in t and kw not in topics:
-                        topics.append(kw)
-        return topics[:5]
+        try:
+            msgs = session.get("messages", [])[-10:]
+            topics = set()
+            for m in msgs:
+                if m.get("role") == "user":
+                    content = (m.get("content") or "").lower()
+                    if any(word in content for word in ["medicine", "drug", "medication", "prescription"]):
+                        topics.add("medications")
+                    if any(word in content for word in ["pain", "headache", "fever", "cold", "cough"]):
+                        topics.add("symptoms")
+            return list(topics)[:5]
+        except Exception:
+            return []
 
     # --------- persistence --------- #
     def _save_session(self, session_id: str) -> bool:
         try:
             s = self.active_sessions.get(session_id)
             if not s:
+                logger.warning(f"Attempted to save non-existent session: {session_id}")
                 return False
+            
             f = self.memory_dir / f"{session_id}.json"
+            
+            # Create a backup if file already exists
+            if f.exists():
+                backup_path = self.memory_dir / f"{session_id}.json.backup"
+                try:
+                    f.rename(backup_path)
+                except Exception as backup_error:
+                    logger.debug(f"Could not create backup for {session_id}: {backup_error}")
+            
+            # Write the session data
             with open(f, "w", encoding="utf-8") as out:
                 json.dump(s, out, indent=2, ensure_ascii=False)
+            
+            # Remove backup if save was successful
+            backup_path = self.memory_dir / f"{session_id}.json.backup"
+            if backup_path.exists():
+                try:
+                    backup_path.unlink()
+                except Exception:
+                    pass  # Ignore backup cleanup errors
+                    
+            logger.debug(f"Session {session_id} saved successfully to {f}")
             return True
+            
         except Exception as e:
-            logger.error(f"Save error: {e}")
+            logger.error(f"Save error for session {session_id}: {e}")
+            logger.error(f"Memory directory: {self.memory_dir}")
+            logger.error(f"Memory directory exists: {self.memory_dir.exists()}")
+            logger.error(f"Memory directory writable: {os.access(self.memory_dir, os.W_OK)}")
+            
+            # Try to restore backup if save failed
+            backup_path = self.memory_dir / f"{session_id}.json.backup"
+            if backup_path.exists():
+                try:
+                    target_path = self.memory_dir / f"{session_id}.json"
+                    backup_path.rename(target_path)
+                    logger.info(f"Restored backup for session {session_id}")
+                except Exception as restore_error:
+                    logger.error(f"Failed to restore backup for {session_id}: {restore_error}")
+            
             return False
 
     def _load_session(self, session_id: str) -> bool:
@@ -245,6 +321,7 @@ class ConversationMemory:
                 # Use debug level for missing files - this is often expected
                 logger.debug(f"Session file not found: {f}")
                 return False
+            
             with open(f, "r", encoding="utf-8") as src:
                 data = json.load(src)
                 # Validate session data structure
@@ -252,6 +329,7 @@ class ConversationMemory:
                     logger.error(f"Invalid session data in {f}")
                     return False
                 self.active_sessions[session_id] = data
+                logger.debug(f"Session {session_id} loaded successfully from {f}")
             return True
         except json.JSONDecodeError as e:
             logger.error(f"JSON decode error in {f}: {e}")
@@ -268,14 +346,16 @@ class ConversationMemory:
                 try:
                     with open(f, "r", encoding="utf-8") as src:
                         s = json.load(src)
-                    last = datetime.fromisoformat(s.get("last_activity", "1970-01-01T00:00:00"))
-                    if last < cutoff:
-                        f.unlink()
-                        sid = f.stem
-                        self.active_sessions.pop(sid, None)
-                        n += 1
+                        created = datetime.fromisoformat(s.get("created_at", ""))
+                        if created < cutoff:
+                            f.unlink()
+                            session_id = s.get("session_id")
+                            if session_id in self.active_sessions:
+                                del self.active_sessions[session_id]
+                            n += 1
                 except Exception as e:
-                    logger.warning(f"Cleanup skip {f}: {e}")
+                    logger.debug(f"Cleanup error for {f}: {e}")
+            logger.info(f"Cleaned up {n} old sessions")
             return n
         except Exception as e:
             logger.error(f"Cleanup error: {e}")

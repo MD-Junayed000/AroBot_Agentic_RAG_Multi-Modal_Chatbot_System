@@ -71,6 +71,7 @@ PRESCRIPTION_DIR = Path("prescription_data")   # fixed typo
 WEB_SCRAPE_DIR = Path("Web Scrape")
 STATIC_DIR = Path("static")
 TEMPLATES_DIR = Path("templates")
+MEMORY_DIR = Path("memory")
 
-for p in [DATA_DIR, PRESCRIPTION_DIR, WEB_SCRAPE_DIR, STATIC_DIR, TEMPLATES_DIR]:
+for p in [DATA_DIR, PRESCRIPTION_DIR, WEB_SCRAPE_DIR, STATIC_DIR, TEMPLATES_DIR, MEMORY_DIR]:
     p.mkdir(parents=True, exist_ok=True)

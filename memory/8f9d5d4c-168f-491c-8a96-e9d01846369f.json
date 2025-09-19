@@ -1,0 +1,84 @@
+{
+  "session_id": "8f9d5d4c-168f-491c-8a96-e9d01846369f",
+  "user_id": "user_b0b8e30a",
+  "created_at": "2025-09-19T13:12:53.213541",
+  "last_activity": "2025-09-19T13:13:50.252127",
+  "messages": [
+    {
+      "id": "4e7c73a8-5d2e-4f7d-aa40-19efe08057b2",
+      "timestamp": "2025-09-19T13:12:53.213986",
+      "role": "system",
+      "content": "AroBot session initialized. I'm ready to help with your medical questions.",
+      "type": "system",
+      "metadata": {}
+    },
+    {
+      "id": "cb191588-0121-40fc-85db-efe7d040961e",
+      "timestamp": "2025-09-19T13:13:06.699469",
+      "role": "user",
+      "content": "hi",
+      "type": "text",
+      "metadata": {}
+    },
+    {
+      "id": "9913b9a7-a385-4527-af1d-a5378d79e443",
+      "timestamp": "2025-09-19T13:13:06.706512",
+      "role": "assistant",
+      "content": "Hello! I'm your medical assistant. I can help with medicine information, prescription analysis, and general health questions. What can I help you with?",
+      "type": "text",
+      "metadata": {}
+    },
+    {
+      "id": "db1fed58-94d7-4f70-827a-c0fc6a66325e",
+      "timestamp": "2025-09-19T13:13:21.171079",
+      "role": "user",
+      "content": "how are you",
+      "type": "text",
+      "metadata": {}
+    },
+    {
+      "id": "5e629297-4406-4ca1-bd8b-f8a3d5c0a13e",
+      "timestamp": "2025-09-19T13:13:21.172175",
+      "role": "assistant",
+      "content": "Hello! I'm your medical assistant. I can help with medicine information, prescription analysis, and general health questions. What can I help you with?",
+      "type": "text",
+      "metadata": {}
+    },
+    {
+      "id": "ff43ca00-d3ff-48e8-ac3e-408f3a1a11a4",
+      "timestamp": "2025-09-19T13:13:32.292086",
+      "role": "user",
+      "content": "my name is ridwan",
+      "type": "text",
+      "metadata": {}
+    },
+    {
+      "id": "5da0ba36-ee23-4bcd-8330-eddc47a6b594",
+      "timestamp": "2025-09-19T13:13:32.293215",
+      "role": "assistant",
+      "content": "Hello Ridwan! How can I assist you today? Do you have any medical questions or concerns that I can help with?",
+      "type": "text",
+      "metadata": {}
+    },
+    {
+      "id": "2480fc3b-6cd1-4958-b9c4-15f58a84c9cc",
+      "timestamp": "2025-09-19T13:13:50.250978",
+      "role": "user",
+      "content": "do you know what is my name?",
+      "type": "text",
+      "metadata": {}
+    },
+    {
+      "id": "e6964a1d-5075-4253-b927-eb679e542748",
+      "timestamp": "2025-09-19T13:13:50.252120",
+      "role": "assistant",
+      "content": "I don't have any information about your personal details, including your name. Our conversation just started, and I'm a large language model, I don't retain any data about individual users or their identities. If you'd like to share your name with me, I'd be happy to chat with you!",
+      "type": "text",
+      "metadata": {}
+    }
+  ],
+  "context": {},
+  "prescription_history": [],
+  "medical_queries": [],
+  "long_term_summary": ""
+}

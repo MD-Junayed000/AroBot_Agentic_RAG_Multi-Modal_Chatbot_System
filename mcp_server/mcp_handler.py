@@ -3,6 +3,7 @@ MCP (Model Context Protocol) Handler for maintaining conversation context
 """
 from __future__ import annotations
 import logging
+from datetime import datetime
 from typing import Dict, Any, List, Optional
 
 from .conversation_memory import ConversationMemory
@@ -27,6 +28,7 @@ class MCPHandler:
                 "AroBot session initialized. I'm ready to help with your medical questions.",
                 "system",
             )
+            logger.info(f"New session initialized: {sid}")
             return {"session_id": sid, "status": "initialized", "message": "Session created successfully"}
         except Exception as e:
             logger.error(f"Error init session: {e}")
@@ -41,12 +43,38 @@ class MCPHandler:
             logger.debug(f"Invalid session_id provided to add_user_message: {session_id}")
             return False
             
-        # Ensure session exists before adding message
-        if not self.memory.get_session(session_id):
-            logger.debug(f"Session {session_id} not found when adding user message, skipping")
-            return False
+        # Ensure session exists, create if missing (auto-recovery)
+        session = self.memory.get_session(session_id)
+        if not session:
+            logger.warning(f"Session {session_id} not found when adding user message, attempting to create new session")
+            # Try to create a new session with the same ID (recovery attempt)
+            try:
+                new_session_data = {
+                    "session_id": session_id,
+                    "user_id": f"recovered_user_{session_id[:8]}",
+                    "created_at": datetime.now().isoformat(),
+                    "last_activity": datetime.now().isoformat(),
+                    "messages": [],
+                    "context": {},
+                    "prescription_history": [],
+                    "medical_queries": [],
+                    "long_term_summary": "",
+                }
+                self.memory.active_sessions[session_id] = new_session_data
+                save_success = self.memory._save_session(session_id)
+                if save_success:
+                    logger.info(f"Successfully recovered session {session_id}")
+                else:
+                    logger.error(f"Failed to save recovered session {session_id}")
+                    return False
+            except Exception as recovery_error:
+                logger.error(f"Failed to recover session {session_id}: {recovery_error}")
+                return False
             
-        return self.memory.add_message(session_id, "user", message, message_type, metadata)
+        result = self.memory.add_message(session_id, "user", message, message_type, metadata)
+        if not result:
+            logger.warning(f"Failed to add user message to session {session_id}")
+        return result
 
     @traceable(name="add_assistant_response")
     def add_assistant_response(
@@ -57,16 +85,47 @@ class MCPHandler:
             logger.debug(f"Invalid session_id provided to add_assistant_response: {session_id}")
             return False
             
-        # Ensure session exists before adding message
-        if not self.memory.get_session(session_id):
-            logger.debug(f"Session {session_id} not found when adding assistant response, skipping")
-            return False
+        # Ensure session exists, create if missing (auto-recovery)
+        session = self.memory.get_session(session_id)
+        if not session:
+            logger.warning(f"Session {session_id} not found when adding assistant response, attempting to create new session")
+            # Try to create a new session with the same ID (recovery attempt)
+            try:
+                new_session_data = {
+                    "session_id": session_id,
+                    "user_id": f"recovered_user_{session_id[:8]}",
+                    "created_at": datetime.now().isoformat(),
+                    "last_activity": datetime.now().isoformat(),
+                    "messages": [],
+                    "context": {},
+                    "prescription_history": [],
+                    "medical_queries": [],
+                    "long_term_summary": "",
+                }
+                self.memory.active_sessions[session_id] = new_session_data
+                save_success = self.memory._save_session(session_id)
+                if save_success:
+                    logger.info(f"Successfully recovered session {session_id}")
+                else:
+                    logger.error(f"Failed to save recovered session {session_id}")
+                    return False
+            except Exception as recovery_error:
+                logger.error(f"Failed to recover session {session_id}: {recovery_error}")
+                return False
             
-        return self.memory.add_message(session_id, "assistant", response, message_type, metadata)
+        result = self.memory.add_message(session_id, "assistant", response, message_type, metadata)
+        if not result:
+            logger.warning(f"Failed to add assistant response to session {session_id}")
+        return result
 
     @traceable(name="get_conversation_context")
     def get_conversation_context(self, session_id: str, context_window: Optional[int] = None) -> Dict[str, Any]:
         try:
+            # Validate session_id
+            if not session_id or session_id.strip() == "" or session_id == "None":
+                logger.debug(f"Invalid session_id provided to get_conversation_context: {session_id}")
+                return {"error": "Invalid session_id", "status": "error"}
+            
             window = context_window or self.default_context_window
             msgs = self.memory.get_conversation_history(session_id, window * 2)
             summary = self.memory.get_context_summary(session_id)
@@ -82,7 +141,7 @@ class MCPHandler:
                 "status": "success",
             }
         except Exception as e:
-            logger.error(f"Error building context: {e}")
+            logger.error(f"Error building context for session {session_id}: {e}")
             return {"error": str(e), "status": "error"}
 
     @traceable(name="record_prescription_analysis")
@@ -211,3 +270,33 @@ class MCPHandler:
         except Exception as e:
             logger.error(f"Cleanup error: {e}")
             return {"error": str(e), "status": "error"}
+
+    def get_session_status(self, session_id: str) -> Dict[str, Any]:
+        """Get detailed session status for debugging"""
+        try:
+            session = self.memory.get_session(session_id)
+            if not session:
+                return {
+                    "session_id": session_id,
+                    "exists": False,
+                    "status": "not_found"
+                }
+            
+            return {
+                "session_id": session_id,
+                "exists": True,
+                "created_at": session.get("created_at"),
+                "last_activity": session.get("last_activity"),
+                "message_count": len(session.get("messages", [])),
+                "prescription_count": len(session.get("prescription_history", [])),
+                "file_exists": (self.memory.memory_dir / f"{session_id}.json").exists(),
+                "memory_dir": str(self.memory.memory_dir.absolute()),
+                "status": "active"
+            }
+        except Exception as e:
+            logger.error(f"Error getting session status: {e}")
+            return {
+                "session_id": session_id,
+                "error": str(e),
+                "status": "error"
+            }
