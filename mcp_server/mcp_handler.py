@@ -36,12 +36,32 @@ class MCPHandler:
     def add_user_message(
         self, session_id: str, message: str, message_type: str = "text", metadata: Optional[Dict[str, Any]] = None
     ) -> bool:
+        # Validate session_id
+        if not session_id or session_id.strip() == "" or session_id == "None":
+            logger.debug(f"Invalid session_id provided to add_user_message: {session_id}")
+            return False
+            
+        # Ensure session exists before adding message
+        if not self.memory.get_session(session_id):
+            logger.debug(f"Session {session_id} not found when adding user message, skipping")
+            return False
+            
         return self.memory.add_message(session_id, "user", message, message_type, metadata)
 
     @traceable(name="add_assistant_response")
     def add_assistant_response(
         self, session_id: str, response: str, message_type: str = "text", metadata: Optional[Dict[str, Any]] = None
     ) -> bool:
+        # Validate session_id
+        if not session_id or session_id.strip() == "" or session_id == "None":
+            logger.debug(f"Invalid session_id provided to add_assistant_response: {session_id}")
+            return False
+            
+        # Ensure session exists before adding message
+        if not self.memory.get_session(session_id):
+            logger.debug(f"Session {session_id} not found when adding assistant response, skipping")
+            return False
+            
         return self.memory.add_message(session_id, "assistant", response, message_type, metadata)
 
     @traceable(name="get_conversation_context")
@@ -58,6 +78,7 @@ class MCPHandler:
                 "context": formatted,
                 "message_count": len(msgs),
                 "prescription_count": len(rx),
+                "recent_messages": msgs[-6:] if msgs else [],  # Add recent messages for better context
                 "status": "success",
             }
         except Exception as e:

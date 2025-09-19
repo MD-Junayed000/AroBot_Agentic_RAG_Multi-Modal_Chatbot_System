@@ -6,10 +6,14 @@ from __future__ import annotations
 
 import json
 import logging
+import hashlib
+import time
+import io
 from typing import Dict, Any, List, Optional, Union, Callable
 from dataclasses import dataclass
 from typing import get_type_hints
 import inspect
+from difflib import SequenceMatcher
 
 from core.llm_modular import ModularLLMHandler as LLMHandler
 from utils.web_search import WebSearchTool
@@ -61,6 +65,15 @@ class AgentResponse:
     session_id: Optional[str] = None
     sources: Dict[str, Any] = None
     status: str = "success"
+
+@dataclass
+class RAGCacheEntry:
+    """Cache entry for RAG results with metadata"""
+    query_hash: str
+    context_chunks: List[str]
+    query_type: str
+    timestamp: float
+    hit_count: int = 1
 
 class ToolRegistry:
     """Registry for managing tools with automatic discovery and validation"""
@@ -166,6 +179,14 @@ class LLMAgent:
         self.mcp = MCPHandler()
         self.registry = ToolRegistry()
         self._tool_selection_cache = {}  # Simple cache for tool selection
+        
+        # RAG optimization caches
+        self._rag_cache: Dict[str, RAGCacheEntry] = {}
+        self._query_similarity_cache: Dict[str, str] = {}  # query -> similar query hash
+        self._max_rag_cache_size = 100
+        self._rag_cache_ttl = 3600  # 1 hour TTL
+        self._similarity_threshold = 0.8  # 80% similarity threshold
+        
         self._register_tools()
     
     @property
@@ -183,6 +204,181 @@ class LLMAgent:
                 tool_obj.function = method  # Update function reference
                 self.registry.register_tool(tool_obj)
     
+    def _generate_query_hash(self, query: str, query_type: str) -> str:
+        """Generate a hash for query caching"""
+        normalized_query = query.lower().strip()
+        return hashlib.md5(f"{normalized_query}_{query_type}".encode()).hexdigest()
+    
+    def _find_similar_query(self, query: str) -> Optional[str]:
+        """Find similar query in cache using sequence matching"""
+        normalized_query = query.lower().strip()
+        
+        # Check if we have a cached similar query
+        if normalized_query in self._query_similarity_cache:
+            return self._query_similarity_cache[normalized_query]
+        
+        # Find most similar query in cache
+        best_match = None
+        best_similarity = 0.0
+        
+        for cached_query in self._query_similarity_cache.keys():
+            similarity = SequenceMatcher(None, normalized_query, cached_query).ratio()
+            if similarity > best_similarity and similarity >= self._similarity_threshold:
+                best_similarity = similarity
+                best_match = cached_query
+        
+        if best_match:
+            self._query_similarity_cache[normalized_query] = best_match
+            logger.info(f"Found similar query: {similarity:.2f} similarity")
+            return best_match
+        
+        return None
+    
+    def _get_cached_rag_context(self, query: str, query_type: str) -> Optional[List[str]]:
+        """Get cached RAG context if available and not expired"""
+        query_hash = self._generate_query_hash(query, query_type)
+        current_time = time.time()
+        
+        # Check direct cache hit
+        if query_hash in self._rag_cache:
+            entry = self._rag_cache[query_hash]
+            if current_time - entry.timestamp < self._rag_cache_ttl:
+                entry.hit_count += 1
+                logger.info(f"RAG cache hit for query: {query[:50]}...")
+                return entry.context_chunks
+            else:
+                # Remove expired entry
+                del self._rag_cache[query_hash]
+        
+        # Check for similar query
+        similar_query = self._find_similar_query(query)
+        if similar_query:
+            similar_hash = self._generate_query_hash(similar_query, query_type)
+            if similar_hash in self._rag_cache:
+                entry = self._rag_cache[similar_hash]
+                if current_time - entry.timestamp < self._rag_cache_ttl:
+                    entry.hit_count += 1
+                    logger.info(f"RAG cache hit for similar query: {similarity:.2f} similarity")
+                    return entry.context_chunks
+        
+        return None
+    
+    def _cache_rag_context(self, query: str, query_type: str, context_chunks: List[str]):
+        """Cache RAG context with TTL and size management"""
+        query_hash = self._generate_query_hash(query, query_type)
+        current_time = time.time()
+        
+        # Clean expired entries
+        expired_keys = [
+            key for key, entry in self._rag_cache.items()
+            if current_time - entry.timestamp > self._rag_cache_ttl
+        ]
+        for key in expired_keys:
+            del self._rag_cache[key]
+        
+        # Manage cache size
+        if len(self._rag_cache) >= self._max_rag_cache_size:
+            # Remove least recently used entries (simple LRU by hit count)
+            sorted_entries = sorted(
+                self._rag_cache.items(),
+                key=lambda x: (x[1].hit_count, x[1].timestamp)
+            )
+            # Remove bottom 20% of entries
+            remove_count = self._max_rag_cache_size // 5
+            for key, _ in sorted_entries[:remove_count]:
+                del self._rag_cache[key]
+        
+        # Add new entry
+        self._rag_cache[query_hash] = RAGCacheEntry(
+            query_hash=query_hash,
+            context_chunks=context_chunks,
+            query_type=query_type,
+            timestamp=current_time
+        )
+        
+        # Update similarity cache
+        self._query_similarity_cache[query.lower().strip()] = query.lower().strip()
+    
+    def _optimize_context_chunks(self, context_chunks: List[str], max_chunks: int = 3, max_chars: int = 800) -> List[str]:
+        """Optimize context chunks by limiting size and count"""
+        if not context_chunks:
+            return []
+        
+        optimized_chunks = []
+        total_chars = 0
+        
+        for chunk in context_chunks:
+            if len(optimized_chunks) >= max_chunks:
+                break
+                
+            # Truncate chunk if too long
+            if len(chunk) > max_chars:
+                chunk = chunk[:max_chars] + "..."
+            
+            # Check if adding this chunk would exceed reasonable limits
+            if total_chars + len(chunk) > max_chunks * max_chars:
+                break
+                
+            optimized_chunks.append(chunk)
+            total_chars += len(chunk)
+        
+        logger.info(f"Optimized context: {len(optimized_chunks)} chunks, {total_chars} chars")
+        return optimized_chunks
+    
+    def _smart_context_filtering(self, query: str, context_chunks: List[str]) -> List[str]:
+        """Filter context chunks based on query type and relevance"""
+        if not context_chunks:
+            return []
+        
+        query_lower = query.lower()
+        filtered_chunks = []
+        
+        # Define query type patterns
+        medicine_patterns = ["medicine", "drug", "medication", "tablet", "capsule", "dosage", "mg", "ml"]
+        symptom_patterns = ["symptom", "pain", "fever", "headache", "ache", "hurt"]
+        disease_patterns = ["disease", "condition", "disorder", "syndrome", "infection"]
+        
+        # Determine query type
+        is_medicine_query = any(pattern in query_lower for pattern in medicine_patterns)
+        is_symptom_query = any(pattern in query_lower for pattern in symptom_patterns)
+        is_disease_query = any(pattern in query_lower for pattern in disease_patterns)
+        
+        for chunk in context_chunks:
+            chunk_lower = chunk.lower()
+            relevance_score = 0
+            
+            # Medicine-specific filtering
+            if is_medicine_query:
+                if any(term in chunk_lower for term in ["dose", "dosage", "indication", "contraindication", "side effect"]):
+                    relevance_score += 3
+                if any(term in chunk_lower for term in ["tablet", "capsule", "syrup", "injection"]):
+                    relevance_score += 2
+            
+            # Symptom-specific filtering
+            if is_symptom_query:
+                if any(term in chunk_lower for term in ["symptom", "sign", "manifestation", "presentation"]):
+                    relevance_score += 3
+                if any(term in chunk_lower for term in ["cause", "etiology", "pathophysiology"]):
+                    relevance_score += 2
+            
+            # Disease-specific filtering
+            if is_disease_query:
+                if any(term in chunk_lower for term in ["disease", "condition", "disorder", "syndrome"]):
+                    relevance_score += 3
+                if any(term in chunk_lower for term in ["treatment", "therapy", "management"]):
+                    relevance_score += 2
+            
+            # General medical relevance
+            if any(term in chunk_lower for term in ["clinical", "medical", "health", "patient"]):
+                relevance_score += 1
+            
+            # Only include chunks with sufficient relevance
+            if relevance_score >= 1:
+                filtered_chunks.append(chunk)
+        
+        logger.info(f"Smart filtering: {len(context_chunks)} -> {len(filtered_chunks)} chunks")
+        return filtered_chunks
+
     # Tool definitions using decorators
     @tool(
         name="analyze_text",
@@ -192,7 +388,7 @@ class LLMAgent:
     )
     @traceable(name="analyze_text_tool")
     async def _tool_analyze_text(self, query: str, session_id: Optional[str] = None) -> Dict[str, Any]:
-        """Analyze text using RAG → LLM pipeline for medical queries"""
+        """Analyze text using optimized RAG → LLM pipeline for medical queries"""
         try:
             # Check for greetings and simple queries
             query_lower = query.lower().strip()
@@ -227,17 +423,35 @@ class LLMAgent:
             is_medical_query = any(indicator in query_lower for indicator in medical_indicators) or is_medicine_query
             
             if is_medical_query:
-                logger.info(f"Processing medical query with RAG: {query[:50]}...")
+                logger.info(f"Processing medical query with optimized RAG: {query[:50]}...")
                 
-                # Step 1: Gather relevant context using RAG
-                try:
-                    rag_context = self.llm.gather_rag_context(query, limit=4)
-                    logger.info(f"Retrieved {len(rag_context)} RAG context chunks")
-                except Exception as e:
-                    logger.warning(f"RAG context gathering failed: {e}")
-                    rag_context = []
+                # Determine query type for caching
+                query_type = "medicine" if is_medicine_query else "medical"
                 
-                # Step 2: Use LLM to generate response with RAG context
+                # Step 1: Check RAG cache first
+                rag_context = self._get_cached_rag_context(query, query_type)
+                
+                if not rag_context:
+                    # Step 2: Gather relevant context using RAG (only if not cached)
+                    try:
+                        raw_context = self.llm.gather_rag_context(query, limit=4)
+                        logger.info(f"Retrieved {len(raw_context)} raw RAG context chunks")
+                        
+                        # Step 3: Apply smart context filtering
+                        filtered_context = self._smart_context_filtering(query, raw_context)
+                        
+                        # Step 4: Optimize context chunks (max 3 chunks of 800 chars each)
+                        rag_context = self._optimize_context_chunks(filtered_context, max_chunks=3, max_chars=800)
+                        
+                        # Step 5: Cache the optimized context
+                        self._cache_rag_context(query, query_type, rag_context)
+                        
+                        logger.info(f"Optimized to {len(rag_context)} RAG context chunks")
+                    except Exception as e:
+                        logger.warning(f"RAG context gathering failed: {e}")
+                        rag_context = []
+                
+                # Step 6: Use LLM to generate response with optimized RAG context
                 if rag_context:
                     # Format RAG context
                     context_text = "\n\n---MEDICAL KNOWLEDGE---\n".join(rag_context)
@@ -272,7 +486,8 @@ class LLMAgent:
                     return {
                         "response": medical_response, 
                         "query_type": "medical_with_rag",
-                        "rag_sources": len(rag_context)
+                        "rag_sources": len(rag_context),
+                        "cache_hit": True if self._get_cached_rag_context(query, query_type) else False
                     }
                 
                 else:
@@ -288,7 +503,17 @@ class LLMAgent:
             elif any(term in query_lower for term in ["anatomy", "human body", "tell about", "explain", "what is"]):
                 # Use general knowledge handler with potential RAG context
                 try:
-                    rag_context = self.llm.gather_rag_context(query, limit=2)
+                    # Check cache for educational queries
+                    rag_context = self._get_cached_rag_context(query, "educational")
+                    
+                    if not rag_context:
+                        raw_context = self.llm.gather_rag_context(query, limit=2)
+                        if raw_context:
+                            # Apply smart filtering and optimization
+                            filtered_context = self._smart_context_filtering(query, raw_context)
+                            rag_context = self._optimize_context_chunks(filtered_context, max_chunks=2, max_chars=600)
+                            self._cache_rag_context(query, "educational", rag_context)
+                    
                     if rag_context:
                         context_text = "\n".join(rag_context)
                         educational_prompt = f"""
@@ -595,16 +820,21 @@ class LLMAgent:
     
     @tool(
         name="analyze_pdf",
-        description="Analyze PDF documents, extract text, summarize content, or answer questions about PDFs. Good for medical papers and documents.",
+        description="Analyze PDF documents, extract text and images, summarize content, or answer questions about PDFs. Good for medical papers and documents with multimodal analysis.",
         category="documents", 
         priority=3
     )
     async def _tool_analyze_pdf(self, pdf_data: bytes, question: Optional[str] = None, session_id: Optional[str] = None) -> Dict[str, Any]:
-        """Comprehensive PDF analysis with enhanced processing"""
+        """Comprehensive PDF analysis with optimized multimodal processing using CLIP"""
         try:
             from langchain_community.document_loaders import PyPDFLoader
             import tempfile
             import os
+            import fitz  # PyMuPDF for image extraction
+            from PIL import Image
+            import io
+            import asyncio
+            from concurrent.futures import ThreadPoolExecutor
             
             # Save PDF to temp file
             with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
@@ -612,6 +842,7 @@ class LLMAgent:
                 tmp_path = tmp.name
             
             try:
+                # Step 1: Extract text using LangChain
                 loader = PyPDFLoader(tmp_path)
                 docs = loader.load()
                 
@@ -624,54 +855,93 @@ class LLMAgent:
                         pages_content.append(f"**Page {i+1}:**\n{page_text[:1000]}{'...' if len(page_text) > 1000 else ''}")
                         full_text += page_text + "\n\n"
                 
-                if not full_text.strip():
-                    return {"response": "The PDF appears to be empty or contains no readable text."}
+                logger.info(f"Extracted text from {len(docs)} pages, {len(full_text)} characters")
                 
-                # Analyze content type
-                text_lower = full_text.lower()
-                is_medical = any(term in text_lower for term in [
-                    "medicine", "medical", "drug", "patient", "treatment", "diagnosis", 
-                    "clinical", "pharmaceutical", "therapy", "symptoms", "disease"
-                ])
+                # Step 2: Extract and analyze images with better error handling
+                image_analysis_results = []
+                try:
+                    doc = fitz.open(tmp_path)
+                    logger.info(f"Opened PDF with {len(doc)} pages for image extraction")
+                    
+                    # Extract all images first
+                    all_images = []
+                    total_images_found = 0
+                    
+                    for page_idx in range(len(doc)):
+                        page = doc[page_idx]
+                        image_list = page.get_images(full=True)
+                        total_images_found += len(image_list)
+                        
+                        logger.info(f"Page {page_idx + 1}: Found {len(image_list)} images")
+                        
+                        for img_index, img in enumerate(image_list):
+                            try:
+                                xref = img[0]
+                                base_image = doc.extract_image(xref)
+                                image_bytes = base_image["image"]
+                                
+                                # Check if image is valid
+                                if len(image_bytes) < 100:  # Skip very small images
+                                    logger.warning(f"Skipping small image on page {page_idx + 1}")
+                                    continue
+                                
+                                pil_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+                                
+                                # Check image dimensions
+                                width, height = pil_image.size
+                                if width < 50 or height < 50:  # Skip very small images
+                                    logger.warning(f"Skipping small image {width}x{height} on page {page_idx + 1}")
+                                    continue
+                                
+                                all_images.append({
+                                    "image": pil_image,
+                                    "page_num": page_idx + 1,
+                                    "img_num": img_index + 1,
+                                    "size": (width, height)
+                                })
+                                
+                                logger.info(f"Successfully extracted image {img_index + 1} from page {page_idx + 1} ({width}x{height})")
+                                
+                            except Exception as img_e:
+                                logger.warning(f"Error extracting image {img_index + 1} on page {page_idx + 1}: {img_e}")
+                                continue
+                    
+                    doc.close()
+                    logger.info(f"Total images found: {total_images_found}, Successfully extracted: {len(all_images)}")
+                    
+                    # Process images in parallel with smart selection
+                    if all_images:
+                        # Smart image selection: prioritize first few pages and larger images
+                        selected_images = self._select_relevant_images(all_images, question, max_images=10)
+                        logger.info(f"Selected {len(selected_images)} images for analysis")
+                        
+                        # Process images in parallel
+                        image_analysis_results = await self._process_images_parallel(
+                            selected_images, question, max_workers=2  # Reduced workers for stability
+                        )
+                        logger.info(f"Successfully analyzed {len(image_analysis_results)} images")
+                    else:
+                        logger.warning("No valid images found in PDF")
+                    
+                except Exception as clip_e:
+                    logger.error(f"Image processing failed: {clip_e}")
+                    image_analysis_results = []
                 
+                # Step 3: Use CLIP for multimodal text-image correlation
+                multimodal_analysis = await self._analyze_multimodal_content(
+                    full_text, image_analysis_results, question
+                )
+                logger.info(f"Multimodal analysis completed: {multimodal_analysis.get('correlation_score', 0.0):.2f} correlation")
+                
+                # Step 4: Generate optimized response
                 if question and question.strip():
-                    # Answer specific question
-                    response = self.llm.answer_over_pdf_text(question, full_text)
-                    
-                    # Add context about document structure
-                    doc_info = f"\n\n**Document Info:**\n• Total pages: {len(docs)}\n• Content type: {'Medical/Clinical' if is_medical else 'General'}\n• Total characters: {len(full_text):,}"
-                    response += doc_info
-                    
-                else:
-                    # Provide comprehensive summary
-                    summary_prompt = f"""Provide a comprehensive summary of this {'medical' if is_medical else ''} document. Include:
-
-1. **Main Topic/Title**: What is this document about?
-2. **Key Points**: 3-5 most important findings or points
-3. **Structure**: What sections or chapters does it contain?
-4. **Target Audience**: Who is this document written for?
-5. **Key Takeaways**: Most important information for readers
-
-Document text:
-{full_text[:10000]}{'...(truncated)' if len(full_text) > 10000 else ''}"""
-                    
-                    summary = self.llm.generate_text_response(
-                        summary_prompt, 
-                        system_prompt="You are a medical document analyst. Provide clear, structured summaries with medical accuracy."
+                    response = await self._generate_optimized_pdf_answer(
+                        question, full_text, image_analysis_results, multimodal_analysis
                     )
-                    
-                    # Add document statistics
-                    doc_stats = f"""
-**Document Statistics:**
-• Total pages: {len(docs)}
-• Content type: {'Medical/Clinical document' if is_medical else 'General document'}
-• Word count: ~{len(full_text.split()):,}
-• Character count: {len(full_text):,}
-
-**Page Preview:**
-{pages_content[0] if pages_content else 'No readable content found'}"""
-                    
-                    response = summary + "\n\n" + doc_stats
+                else:
+                    response = await self._generate_optimized_pdf_summary(
+                        full_text, image_analysis_results, multimodal_analysis, pages_content
+                    )
                 
                 return {
                     "response": response,
@@ -679,9 +949,13 @@ Document text:
                         "total_pages": len(docs),
                         "word_count": len(full_text.split()),
                         "char_count": len(full_text),
-                        "is_medical": is_medical
+                        "is_medical": multimodal_analysis.get("is_medical", False),
+                        "images_analyzed": len(image_analysis_results),
+                        "multimodal_score": multimodal_analysis.get("correlation_score", 0.0),
+                        "total_images_found": total_images_found if 'total_images_found' in locals() else 0
                     },
-                    "pages_content": pages_content[:3]  # First 3 pages for reference
+                    "pages_content": pages_content[:3],
+                    "image_analysis": image_analysis_results[:3]
                 }
                 
             finally:
@@ -691,7 +965,7 @@ Document text:
             logger.exception(f"Error in analyze_pdf tool: {e}")
             # Fallback attempt
             try:
-                import fitz  # PyMuPDF fallback
+                import fitz
                 
                 with tempfile.NamedTemporaryFile(suffix=".pdf") as tmp:
                     tmp.write(pdf_data)
@@ -713,6 +987,326 @@ Document text:
                 
             except Exception as e2:
                 return {"error": f"PDF analysis failed completely: {str(e)} | Fallback also failed: {str(e2)}"}
+    
+    def _select_relevant_images(self, all_images: List[Dict], question: Optional[str], max_images: int = 10) -> List[Dict]:
+        """Smart selection of most relevant images with better scoring"""
+        if len(all_images) <= max_images:
+            return all_images
+        
+        # Priority scoring
+        scored_images = []
+        for img_data in all_images:
+            score = 0
+            
+            # Prioritize early pages (likely to be important)
+            if img_data["page_num"] <= 3:
+                score += 5
+            elif img_data["page_num"] <= 10:
+                score += 3
+            elif img_data["page_num"] <= 20:
+                score += 2
+            else:
+                score += 1
+            
+            # Prioritize larger images (likely to be more important)
+            width, height = img_data["size"]
+            area = width * height
+            if area > 200000:  # Very large images
+                score += 4
+            elif area > 100000:  # Large images
+                score += 3
+            elif area > 50000:  # Medium images
+                score += 2
+            elif area > 20000:  # Small images
+                score += 1
+            
+            # If question is about specific content, prioritize accordingly
+            if question:
+                question_lower = question.lower()
+                if any(term in question_lower for term in ["chart", "graph", "diagram", "figure", "image", "picture"]):
+                    score += 3
+            
+            scored_images.append((score, img_data))
+        
+        # Sort by score and return top images
+        scored_images.sort(key=lambda x: x[0], reverse=True)
+        selected = [img_data for _, img_data in scored_images[:max_images]]
+        
+        logger.info(f"Selected {len(selected)} images from {len(all_images)} total")
+        return selected
+    
+    async def _process_images_parallel(self, selected_images: List[Dict], question: Optional[str], max_workers: int = 2) -> List[Dict]:
+        """Process multiple images in parallel for better performance"""
+        try:
+            if not selected_images:
+                return []
+            
+            logger.info(f"Processing {len(selected_images)} images with {max_workers} workers")
+            
+            # Use ThreadPoolExecutor for parallel processing
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # Create tasks for parallel execution
+                tasks = []
+                for img_data in selected_images:
+                    task = asyncio.get_event_loop().run_in_executor(
+                        executor,
+                        self._analyze_single_image_sync,
+                        img_data["image"],
+                        img_data["page_num"],
+                        img_data["img_num"],
+                        question
+                    )
+                    tasks.append(task)
+                
+                # Wait for all tasks to complete with timeout
+                try:
+                    results = await asyncio.wait_for(
+                        asyncio.gather(*tasks, return_exceptions=True),
+                        timeout=60.0  # 60 second timeout
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("Image processing timed out")
+                    results = []
+                
+                # Filter out exceptions and None results
+                valid_results = []
+                for i, result in enumerate(results):
+                    if isinstance(result, dict) and result.get("description"):
+                        valid_results.append(result)
+                    elif isinstance(result, Exception):
+                        logger.warning(f"Image analysis failed for image {i+1}: {result}")
+                
+                logger.info(f"Successfully processed {len(valid_results)} out of {len(selected_images)} images")
+                return valid_results
+                
+        except Exception as e:
+            logger.error(f"Parallel image processing failed: {e}")
+            return []
+    
+    def _analyze_single_image_sync(self, pil_image: Image.Image, page_num: int, img_num: int, question: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Synchronous image analysis for parallel processing"""
+        try:
+            # Check if CLIP is available
+            if not hasattr(self.llm, 'vision') or not hasattr(self.llm.vision, 'clip_available') or not self.llm.vision.clip_available:
+                logger.warning("CLIP not available, using basic image analysis")
+                # Fallback to basic analysis
+                return {
+                    "page_number": page_num,
+                    "image_number": img_num,
+                    "description": f"Image {img_num} from page {page_num} (size: {pil_image.size})",
+                    "clip_embedding": None,
+                    "clip_similarity": 0.0,
+                    "analysis_type": "general"
+                }
+            
+            # Convert PIL image to bytes for vision analysis
+            img_bytes = io.BytesIO()
+            pil_image.save(img_bytes, format='JPEG', quality=75)  # Reduced quality for speed
+            img_bytes = img_bytes.getvalue()
+            
+            # Optimized vision prompt for faster processing
+            if question:
+                vision_prompt = f"Describe this image from page {page_num} of a medical encyclopedia. Focus on: 1) Main content, 2) Text/labels, 3) Medical content, 4) Relevance to: '{question}'"
+            else:
+                vision_prompt = f"Describe this image from page {page_num} of a medical encyclopedia. Focus on: 1) Main content, 2) Text/labels, 3) Medical content, 4) Charts/diagrams"
+            
+            # Use vision model with optimized settings
+            vision_response = self.llm.generate_vision_response(vision_prompt, image_data=img_bytes)
+            
+            # Generate CLIP embeddings for multimodal analysis
+            clip_analysis = self.llm.vision.analyze_image_with_clip(pil_image, vision_prompt)
+            
+            return {
+                "page_number": page_num,
+                "image_number": img_num,
+                "description": vision_response,
+                "clip_embedding": clip_analysis.get("image_embedding"),
+                "clip_similarity": clip_analysis.get("similarity_score", 0.0),
+                "analysis_type": "medical" if any(term in vision_response.lower() for term in [
+                    "medical", "clinical", "anatomy", "prescription", "medicine", "diagnosis", "chart", "graph", "encyclopedia"
+                ]) else "general"
+            }
+            
+        except Exception as e:
+            logger.warning(f"Error analyzing image on page {page_num}: {e}")
+            return None
+    
+    async def _analyze_multimodal_content(self, full_text: str, image_analysis_results: List[Dict], question: Optional[str]) -> Dict[str, Any]:
+        """Use CLIP to analyze text-image correlation and content type"""
+        try:
+            if not image_analysis_results:
+                logger.warning("No image analysis results for multimodal analysis")
+                return {
+                    "is_medical": any(term in full_text.lower() for term in [
+                        "medicine", "medical", "drug", "patient", "treatment", "diagnosis", 
+                        "clinical", "pharmaceutical", "therapy", "symptoms", "disease", "encyclopedia"
+                    ]),
+                    "correlation_score": 0.0,
+                    "multimodal_insights": []
+                }
+            
+            # Extract key text snippets for CLIP analysis
+            text_snippets = self._extract_key_text_snippets(full_text, max_snippets=5)
+            
+            # Use CLIP to find text-image correlations
+            correlations = []
+            for snippet in text_snippets:
+                for img_result in image_analysis_results:
+                    if img_result.get("clip_embedding") is not None:
+                        # Calculate similarity between text and image
+                        similarity = self._calculate_text_image_similarity(snippet, img_result["clip_embedding"])
+                        if similarity > 0.2:  # Lower threshold for more correlations
+                            correlations.append({
+                                "text_snippet": snippet,
+                                "image_page": img_result["page_number"],
+                                "similarity": similarity,
+                                "image_description": img_result["description"]
+                            })
+            
+            # Determine if content is medical based on both text and images
+            is_medical = any(term in full_text.lower() for term in [
+                "medicine", "medical", "drug", "patient", "treatment", "diagnosis", 
+                "clinical", "pharmaceutical", "therapy", "symptoms", "disease", "encyclopedia"
+            ])
+            
+            # Check image analysis for medical indicators
+            if not is_medical:
+                for img_result in image_analysis_results:
+                    if img_result.get("analysis_type") == "medical":
+                        is_medical = True
+                        break
+            
+            logger.info(f"Multimodal analysis: {len(correlations)} correlations found, medical: {is_medical}")
+            
+            return {
+                "is_medical": is_medical,
+                "correlation_score": max([c["similarity"] for c in correlations], default=0.0),
+                "multimodal_insights": correlations[:3],  # Top 3 correlations
+                "text_snippets": text_snippets
+            }
+            
+        except Exception as e:
+            logger.warning(f"Multimodal analysis failed: {e}")
+            return {
+                "is_medical": any(term in full_text.lower() for term in [
+                    "medicine", "medical", "drug", "patient", "treatment", "diagnosis", "encyclopedia"
+                ]),
+                "correlation_score": 0.0,
+                "multimodal_insights": []
+            }
+    
+    def _extract_key_text_snippets(self, full_text: str, max_snippets: int = 5) -> List[str]:
+        """Extract key text snippets for CLIP analysis"""
+        # Split into sentences and select most informative ones
+        sentences = full_text.split('.')
+        key_snippets = []
+        
+        # Prioritize sentences with medical terms
+        medical_terms = ["medicine", "medical", "drug", "treatment", "diagnosis", "clinical", "patient", "therapy", "encyclopedia", "disease", "symptom"]
+        
+        scored_sentences = []
+        for sentence in sentences:
+            if len(sentence.strip()) > 20:  # Minimum length
+                score = sum(1 for term in medical_terms if term in sentence.lower())
+                if score > 0 or len(sentence) > 100:  # Include medical or long sentences
+                    scored_sentences.append((score, sentence.strip()))
+        
+        # Sort by score and length
+        scored_sentences.sort(key=lambda x: (x[0], len(x[1])), reverse=True)
+        
+        for score, sentence in scored_sentences[:max_snippets]:
+            key_snippets.append(sentence[:200])  # Limit snippet length
+        
+        return key_snippets
+    
+    def _calculate_text_image_similarity(self, text_snippet: str, image_embedding: List[float]) -> float:
+        """Calculate similarity between text and image using CLIP"""
+        try:
+            if not hasattr(self.llm.vision, 'clip_model') or self.llm.vision.clip_model is None:
+                return 0.0
+            
+            # Tokenize text
+            text_tokens = clip.tokenize([text_snippet])
+            
+            # Get text embedding
+            with torch.no_grad():
+                text_features = self.llm.vision.clip_model.encode_text(text_tokens)
+                text_embedding = text_features.cpu().numpy()[0]
+            
+            # Calculate cosine similarity
+            import numpy as np
+            similarity = np.dot(text_embedding, image_embedding) / (
+                np.linalg.norm(text_embedding) * np.linalg.norm(image_embedding)
+            )
+            
+            return float(similarity)
+            
+        except Exception as e:
+            logger.warning(f"Text-image similarity calculation failed: {e}")
+            return 0.0
+    
+    async def _generate_optimized_pdf_summary(self, full_text: str, image_analysis_results: List[Dict], multimodal_analysis: Dict, pages_content: List[str]) -> str:
+        """Generate optimized summary using multimodal analysis"""
+        try:
+            # Prepare efficient context
+            context_parts = []
+            
+            # Add text context
+            if full_text.strip():
+                context_parts.append(f"**Text Content:**\n{full_text[:4000]}{'...' if len(full_text) > 4000 else ''}")
+            
+            # Add image context
+            if image_analysis_results:
+                image_context = "**Key Images:**\n"
+                for i, img_result in enumerate(image_analysis_results[:4], 1):
+                    image_context += f"Image {i} (Page {img_result['page_number']}): {img_result['description'][:150]}...\n"
+                context_parts.append(image_context)
+            else:
+                context_parts.append("**Images:** No images were successfully analyzed from this PDF.")
+            
+            # Add multimodal insights
+            if multimodal_analysis.get("multimodal_insights"):
+                insights = "**Text-Image Correlations:**\n"
+                for insight in multimodal_analysis["multimodal_insights"][:3]:
+                    insights += f"• {insight['text_snippet'][:80]}... (Page {insight['image_page']})\n"
+                context_parts.append(insights)
+            
+            # Create optimized summary prompt
+            prompt = f"""
+            Provide a comprehensive summary of this {'medical' if multimodal_analysis.get('is_medical') else ''} PDF document:
+            
+            1. **Main Topic**: What is this document about?
+            2. **Key Points**: 3-5 most important findings
+            3. **Visual Content**: Summary of important images/charts (if any)
+            4. **Structure**: Document organization
+            5. **Key Takeaways**: Most important information for readers
+            
+            CONTEXT:
+            {chr(10).join(context_parts)}
+            
+            Provide a clear, structured summary that integrates text and visual information. If no images were analyzed, mention this in the visual content section.
+            """
+            
+            # Generate summary
+            system_prompt = "You are a medical document analyst. Provide clear, structured summaries with medical accuracy." if multimodal_analysis.get("is_medical") else "You are a document analyst. Provide clear, structured summaries."
+            summary = self.llm.text_gen.generate_response(prompt, system_prompt=system_prompt)
+            
+            # Add statistics
+            doc_stats = f"""
+**Document Statistics:**
+• Total pages: {len(pages_content)}
+• Images analyzed: {len(image_analysis_results)}
+• Content type: {'Medical/Clinical document' if multimodal_analysis.get('is_medical') else 'General document'}
+• Multimodal correlation: {multimodal_analysis.get('correlation_score', 0.0):.2f}
+• Word count: ~{len(full_text.split()):,}
+• Character count: {len(full_text):,}"""
+            
+            return summary + "\n\n" + doc_stats
+            
+        except Exception as e:
+            logger.error(f"Error generating optimized summary: {e}")
+            # Fallback to text-only summary
+            return f"**PDF Content Summary:**\n\n{full_text[:3000]}{'...' if len(full_text) > 3000 else ''}"
     
     @tool(
         name="get_weather",
@@ -928,13 +1522,71 @@ Document text:
     )
     @traceable(name="access_memory_tool")
     async def _tool_access_memory(self, query: str, session_id: str) -> Dict[str, Any]:
-        """Access conversation memory"""
+        """Access conversation memory with enhanced error handling and session management"""
         try:
-            context = self.mcp.get_conversation_context(session_id)
-            response = f"Conversation memory accessed. Recent context: {context.get('context', 'No recent context')[:200]}"
-            return {"response": response}
+            # Ensure session exists, create if not
+            if not session_id:
+                session_result = self.mcp.initialize_session()
+                if session_result.get("error"):
+                    return {"error": f"Failed to create session: {session_result['error']}"}
+                session_id = session_result["session_id"]
+            
+            # Get conversation context with better error handling
+            context_data = self.mcp.get_conversation_context(session_id)
+            
+            if context_data.get("error"):
+                return {"error": f"Memory access failed: {context_data['error']}"}
+            
+            # Extract useful information from context
+            context_text = context_data.get("context", "")
+            message_count = context_data.get("message_count", 0)
+            prescription_count = context_data.get("prescription_count", 0)
+            
+            # Generate a more helpful response based on the query
+            query_lower = query.lower()
+            
+            if any(term in query_lower for term in ["history", "previous", "past", "before", "earlier"]):
+                if message_count > 0:
+                    response = f"**Conversation History:**\n{context_text}\n\n*Total messages: {message_count}*"
+                else:
+                    response = "No previous conversation history found. This appears to be a new session."
+            elif any(term in query_lower for term in ["prescription", "medicine", "medication", "drug"]):
+                if prescription_count > 0:
+                    response = f"**Prescription History:**\n{context_text}\n\n*Prescriptions analyzed: {prescription_count}*"
+                else:
+                    response = "No prescription history found in this session."
+            elif any(term in query_lower for term in ["summary", "overview", "context"]):
+                response = f"**Session Summary:**\n{context_text}\n\n*Session activity: {message_count} messages, {prescription_count} prescriptions*"
+            else:
+                # General memory access
+                if context_text:
+                    response = f"**Recent Context:**\n{context_text[:500]}{'...' if len(context_text) > 500 else ''}"
+                else:
+                    response = "No conversation context available. This appears to be a new session."
+            
+            return {
+                "response": response,
+                "session_id": session_id,
+                "message_count": message_count,
+                "prescription_count": prescription_count,
+                "context_length": len(context_text)
+            }
+            
         except Exception as e:
-            return {"error": str(e)}
+            logger.exception(f"Error in access_memory tool: {e}")
+            # Try to create a new session as fallback
+            try:
+                session_result = self.mcp.initialize_session()
+                if session_result.get("session_id"):
+                    return {
+                        "response": "I had trouble accessing your previous conversation, but I've started a new session for you. How can I help?",
+                        "session_id": session_result["session_id"],
+                        "error": f"Memory access failed, created new session: {str(e)}"
+                    }
+            except Exception as e2:
+                logger.error(f"Failed to create fallback session: {e2}")
+            
+            return {"error": f"Memory access failed: {str(e)}"}
     
     @tool(
         name="web_search",
@@ -991,6 +1643,32 @@ Document text:
             "max_cache_size": 50
         }
     
+    def get_rag_cache_stats(self) -> Dict[str, Any]:
+        """Get RAG cache statistics for monitoring"""
+        current_time = time.time()
+        active_entries = sum(
+            1 for entry in self._rag_cache.values()
+            if current_time - entry.timestamp < self._rag_cache_ttl
+        )
+        
+        total_hits = sum(entry.hit_count for entry in self._rag_cache.values())
+        
+        return {
+            "total_entries": len(self._rag_cache),
+            "active_entries": active_entries,
+            "total_hits": total_hits,
+            "cache_hit_rate": total_hits / max(len(self._rag_cache), 1),
+            "similarity_cache_size": len(self._query_similarity_cache),
+            "max_cache_size": self._max_rag_cache_size,
+            "ttl_seconds": self._rag_cache_ttl
+        }
+    
+    def clear_rag_cache(self):
+        """Clear RAG cache for testing or memory management"""
+        self._rag_cache.clear()
+        self._query_similarity_cache.clear()
+        logger.info("RAG cache cleared")
+
     @traceable(name="process_request")
     async def process_request(
         self,
@@ -1004,7 +1682,15 @@ Document text:
         """
         try:
             if not session_id:
-                session_id = self.mcp.initialize_session().get("session_id")
+                session_result = self.mcp.initialize_session()
+                if session_result.get("error"):
+                    return AgentResponse(
+                        response=f"I encountered an error initializing a new session: {session_result['error']}",
+                        tools_used=[],
+                        session_id=None,
+                        status="error"
+                    )
+                session_id = session_result.get("session_id")
             
             # Prepare input description for the LLM
             input_description = self._describe_input(text_input, image_data, pdf_data)

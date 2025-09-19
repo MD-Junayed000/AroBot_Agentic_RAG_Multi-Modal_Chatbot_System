@@ -151,7 +151,7 @@ async def api_info():
 
 @app.get("/health")
 async def health_check():
-    """Enhanced health check with system metrics"""
+    """Enhanced health check with system metrics and RAG cache stats"""
     try:
         # System metrics
         uptime = time.time() - app_start_time
@@ -165,6 +165,24 @@ async def health_check():
             "vector_store": "healthy"  # TODO: Add Pinecone health check
         }
         
+        # Get RAG cache stats if available
+        rag_cache_stats = {}
+        try:
+            from core.agent_core import LLMAgent
+            agent = LLMAgent()
+            rag_cache_stats = agent.get_rag_cache_stats()
+        except Exception as e:
+            rag_cache_stats = {"error": str(e)}
+        
+        # Get CLIP status
+        clip_status = {}
+        try:
+            from core.llm_modular import ModularLLMHandler
+            llm_handler = ModularLLMHandler()
+            clip_status = llm_handler.vision.get_clip_status()
+        except Exception as e:
+            clip_status = {"error": str(e)}
+        
         return {
             "status": "healthy",
             "service": "AroBot",
@@ -177,7 +195,9 @@ async def health_check():
                 "error_handler": error_handler.get_error_stats(),
                 "rate_limiter": rate_limiter.get_stats(),
                 "request_logger": request_logger.get_stats()
-            }
+            },
+            "rag_cache_stats": rag_cache_stats,
+            "clip_status": clip_status
         }
     except Exception as e:
         logger.exception("Health check failed")

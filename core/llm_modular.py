@@ -32,6 +32,13 @@ class ModularLLMHandler:
         self.rag = RAGContextManager()
         self.prescription_parser = PrescriptionParser()
         self.bd_medicines = BangladeshMedicineInfo()
+        
+        # Log CLIP status
+        clip_status = self.vision.get_clip_status()
+        if clip_status["clip_available"]:
+            logger.info("✅ CLIP initialized successfully for multimodal processing")
+        else:
+            logger.warning("⚠️ CLIP not available - PDF image analysis will be limited")
     
     # ==================== TEXT GENERATION ====================
     
@@ -177,23 +184,27 @@ class ModularLLMHandler:
             return f"I'm unable to answer that medical question right now. Error: {str(e)}"
 
     def gather_rag_context(self, query: str, extra_ctx: Optional[List[str]] = None, limit: int = 3) -> List[str]:
-        """Expose RAG context gathering for agents and legacy integrations."""
+        """Expose RAG context gathering for agents and legacy integrations with optimizations."""
         collected: List[str] = []
 
         if extra_ctx:
             for chunk in extra_ctx:
                 if isinstance(chunk, str) and chunk.strip():
-                    collected.append(chunk.strip())
+                    # Truncate extra context to 800 chars for optimization
+                    truncated_chunk = chunk.strip()[:800]
+                    collected.append(truncated_chunk)
 
         try:
             hits = self.rag.gather_context(query)
             for chunk in hits:
                 if isinstance(chunk, str) and chunk.strip():
-                    collected.append(chunk.strip())
+                    # Truncate RAG context to 800 chars for optimization
+                    truncated_chunk = chunk.strip()[:800]
+                    collected.append(truncated_chunk)
         except Exception as e:
             logger.warning(f"RAG context gathering failed: {e}")
 
-        # Deduplicate while preserving order
+        # Deduplicate while preserving order and limiting size
         seen = set()
         unique: List[str] = []
         for chunk in collected:

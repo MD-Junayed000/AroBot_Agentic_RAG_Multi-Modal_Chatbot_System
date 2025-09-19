@@ -199,9 +199,8 @@ async def unified_chat_endpoint(req: ChatMessage):
             session_id=session_id
         )
         
-        # Add to conversation memory
-        add_to_conversation_memory(session_id, "user", req.message)
-        add_to_conversation_memory(session_id, "assistant", result.response)
+        # Note: LLMAgent already saves messages to persistent MCP memory system
+        # No need to duplicate with add_to_conversation_memory()
         
         return {
             "response": result.response,
@@ -240,7 +239,7 @@ async def analyze_prescription_text(req: PrescriptionQuery):
             text = result.get("response", "Analysis completed.")
             get_mcp().add_assistant_response(session_id, text)
             get_mcp().record_medical_query(session_id, req.query, text, "prescription")
-            add_to_conversation_memory(session_id, "Assistant", text)
+            # Note: MCP already handles persistent memory storage
             return {"response": text, "session_id": session_id, "status": "success"}
         else:
             err = f"Error: {result.get('error', 'Unknown error')}"
@@ -356,7 +355,7 @@ async def search_medicine(req: MedicineQuery):
         
         get_mcp().add_assistant_response(session_id, response)
         get_mcp().record_medical_query(session_id, req.query, response, "medicine_search")
-        add_to_conversation_memory(session_id, "Assistant", response)
+        # Note: MCP already handles persistent memory storage
         
         return {
             "response": response,

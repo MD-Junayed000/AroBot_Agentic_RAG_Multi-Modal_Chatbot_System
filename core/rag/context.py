@@ -10,7 +10,7 @@ from config.env_config import PINECONE_MEDICINE_INDEX, PINECONE_BD_PHARMACY_INDE
 logger = logging.getLogger(__name__)
 
 class RAGContextManager:
-    """Manages RAG context retrieval and relevance scoring"""
+    """Manages RAG context retrieval and relevance scoring with optimizations"""
     
     def __init__(self):
         self.medicine_store = None
@@ -27,14 +27,14 @@ class RAGContextManager:
             logger.warning(f"BD pharmacy store init failed: {e}")
     
     def gather_context(self, query: str, max_chunks: int = 3) -> List[str]:
-        """Gather relevant context for query"""
+        """Gather relevant context for query with optimizations"""
         contexts = []
         query_terms = set(query.lower().split())
         
         # Select best namespace
         namespace = self._select_namespace(query)
         
-        # Query BD pharmacy store
+        # Query BD pharmacy store with optimized parameters
         if self.bd_pharmacy_store:
             try:
                 hits = self.bd_pharmacy_store.query(query, top_k=2, namespace=namespace)
@@ -42,11 +42,13 @@ class RAGContextManager:
                     if hit and len(hit.strip()) > 50:
                         score = self._calculate_relevance_score(hit, query_terms)
                         if score > 0.1:
-                            contexts.append(hit)
+                            # Truncate to 800 chars for optimization
+                            truncated_hit = hit[:800] + "..." if len(hit) > 800 else hit
+                            contexts.append(truncated_hit)
             except Exception as e:
                 logger.warning(f"BD pharmacy query failed: {e}")
         
-        # Query medicine store if needed
+        # Query medicine store if needed with optimized parameters
         if len(contexts) < max_chunks and self.medicine_store:
             medicine_keywords = ["medicine", "drug", "medication", "tablet", "capsule"]
             if any(keyword in query.lower() for keyword in medicine_keywords):
@@ -56,12 +58,14 @@ class RAGContextManager:
                         if hit and len(hit.strip()) > 50:
                             score = self._calculate_relevance_score(hit, query_terms)
                             if score > 0.15:
-                                contexts.append(hit)
+                                # Truncate to 800 chars for optimization
+                                truncated_hit = hit[:800] + "..." if len(hit) > 800 else hit
+                                contexts.append(truncated_hit)
                                 break
                 except Exception as e:
                     logger.warning(f"Medicine store query failed: {e}")
         
-        # Deduplicate and limit
+        # Deduplicate and limit with optimizations
         return self._deduplicate_contexts(contexts, max_chunks)
     
     def _select_namespace(self, query: str) -> str:
@@ -84,7 +88,7 @@ class RAGContextManager:
         return "prescribing"
     
     def _calculate_relevance_score(self, text: str, query_terms: Set[str]) -> float:
-        """Calculate relevance score for text chunk"""
+        """Calculate relevance score for text chunk with optimizations"""
         if not text or not query_terms:
             return 0.0
         
@@ -101,11 +105,11 @@ class RAGContextManager:
         medical_matches = len(medical_terms.intersection(text_words))
         medical_boost = min(medical_matches * 0.1, 0.3)
         
-        # Length penalty
+        # Length penalty (optimized for 800 char limit)
         length = len(text)
         if length < 100:
             length_penalty = 0.5
-        elif length > 1500:
+        elif length > 1000:  # Reduced from 1500 to 1000 for optimization
             length_penalty = 0.7
         else:
             length_penalty = 1.0
@@ -113,7 +117,7 @@ class RAGContextManager:
         return (term_score + medical_boost) * length_penalty
     
     def _deduplicate_contexts(self, contexts: List[str], max_chunks: int) -> List[str]:
-        """Remove duplicate or very similar contexts"""
+        """Remove duplicate or very similar contexts with optimizations"""
         if not contexts:
             return []
         
@@ -140,7 +144,9 @@ class RAGContextManager:
             
             # Add if not too similar (< 70% overlap)
             if overlap_score < 0.7:
-                unique_contexts.append(context.strip()[:600])  # Truncate for focus
+                # Truncate to 800 chars for optimization
+                truncated_context = context.strip()[:800]
+                unique_contexts.append(truncated_context)
                 seen_phrase_sets.append(key_phrases)
                 
                 if len(unique_contexts) >= max_chunks:
@@ -149,7 +155,7 @@ class RAGContextManager:
         return unique_contexts
     
     def _extract_key_phrases(self, text: str) -> Set[str]:
-        """Extract key phrases for similarity comparison"""
+        """Extract key phrases for similarity comparison with optimizations"""
         text_lower = text.lower()
         phrases = set()
         
@@ -168,11 +174,13 @@ class RAGContextManager:
         return phrases
     
     def format_context_prompt(self, query: str, contexts: List[str]) -> str:
-        """Format contexts into a prompt"""
+        """Format contexts into a prompt with optimizations"""
         if not contexts:
             context_block = "No relevant context available."
         else:
-            context_block = "\n\n---\n".join(contexts)
+            # Limit context length for optimization
+            limited_contexts = contexts[:3]  # Max 3 contexts
+            context_block = "\n\n---\n".join(limited_contexts)
         
         return (
             "Use the CONTEXT to answer the medical question. "

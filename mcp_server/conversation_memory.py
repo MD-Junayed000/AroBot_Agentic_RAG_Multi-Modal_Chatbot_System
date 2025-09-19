@@ -43,6 +43,11 @@ class ConversationMemory:
         return session_id
 
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+        # Validate session_id
+        if not session_id or session_id.strip() == "" or session_id == "None":
+            logger.debug(f"Invalid session_id provided: {session_id}")
+            return None
+            
         if session_id not in self.active_sessions:
             self._load_session(session_id)
         return self.active_sessions.get(session_id)
@@ -57,9 +62,15 @@ class ConversationMemory:
          metadata: Optional[Dict[str, Any]] = None,
      ) -> bool:
          try:
+             # Validate session_id first
+             if not session_id or session_id.strip() == "" or session_id == "None":
+                 logger.debug(f"Invalid session_id provided to add_message: {session_id}")
+                 return False
+                 
              session = self.get_session(session_id)
              if not session:
-                 logger.warning(f"Session {session_id} not found")
+                 # Use debug level instead of warning - this is often expected when sessions are cleaned up or not yet created
+                 logger.debug(f"Session {session_id} not found when adding message")
                  return False
              msg = {
                  "id": str(uuid.uuid4()),
@@ -97,6 +108,11 @@ class ConversationMemory:
 
     def get_conversation_history(self, session_id: str, limit: int = 20) -> List[Dict[str, Any]]:
         try:
+            # Validate session_id first
+            if not session_id or session_id.strip() == "" or session_id == "None":
+                logger.debug(f"Invalid session_id provided to get_conversation_history: {session_id}")
+                return []
+                
             s = self.get_session(session_id)
             if not s:
                 return []
@@ -109,6 +125,11 @@ class ConversationMemory:
     # --------- prescription & queries --------- #
     def add_prescription_record(self, session_id: str, prescription_data: Dict[str, Any]) -> bool:
         try:
+            # Validate session_id first
+            if not session_id or session_id.strip() == "" or session_id == "None":
+                logger.debug(f"Invalid session_id provided to add_prescription_record: {session_id}")
+                return False
+                
             s = self.get_session(session_id)
             if not s:
                 return False
@@ -124,6 +145,11 @@ class ConversationMemory:
 
     def get_prescription_history(self, session_id: str) -> List[Dict[str, Any]]:
         try:
+            # Validate session_id first
+            if not session_id or session_id.strip() == "" or session_id == "None":
+                logger.debug(f"Invalid session_id provided to get_prescription_history: {session_id}")
+                return []
+                
             s = self.get_session(session_id)
             if not s:
                 return []
@@ -134,6 +160,11 @@ class ConversationMemory:
 
     def add_medical_query(self, session_id: str, query: str, response: str, query_type: str = "general") -> bool:
         try:
+            # Validate session_id first
+            if not session_id or session_id.strip() == "" or session_id == "None":
+                logger.debug(f"Invalid session_id provided to add_medical_query: {session_id}")
+                return False
+                
             s = self.get_session(session_id)
             if not s:
                 return False
@@ -156,6 +187,11 @@ class ConversationMemory:
     # --------- summaries --------- #
     def get_context_summary(self, session_id: str) -> Dict[str, Any]:
         try:
+            # Validate session_id first
+            if not session_id or session_id.strip() == "" or session_id == "None":
+                logger.debug(f"Invalid session_id provided to get_context_summary: {session_id}")
+                return {}
+                
             s = self.get_session(session_id)
             if not s:
                 return {}
@@ -199,14 +235,29 @@ class ConversationMemory:
 
     def _load_session(self, session_id: str) -> bool:
         try:
+            # Validate session_id before attempting to load
+            if not session_id or session_id.strip() == "" or session_id == "None":
+                logger.debug(f"Invalid session_id for loading: {session_id}")
+                return False
+                
             f = self.memory_dir / f"{session_id}.json"
             if not f.exists():
+                # Use debug level for missing files - this is often expected
+                logger.debug(f"Session file not found: {f}")
                 return False
             with open(f, "r", encoding="utf-8") as src:
-                self.active_sessions[session_id] = json.load(src)
+                data = json.load(src)
+                # Validate session data structure
+                if not isinstance(data, dict) or "session_id" not in data:
+                    logger.error(f"Invalid session data in {f}")
+                    return False
+                self.active_sessions[session_id] = data
             return True
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON decode error in {f}: {e}")
+            return False
         except Exception as e:
-            logger.error(f"Load error: {e}")
+            logger.error(f"Load error for {session_id}: {e}")
             return False
 
     def cleanup_old_sessions(self) -> int:
