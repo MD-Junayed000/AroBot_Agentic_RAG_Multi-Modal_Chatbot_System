@@ -2,7 +2,7 @@
 """
 Setup script for knowledge base ingestion
 - PDF text  -> Indexed under namespace 'pdfs' in PINECONE_BD_PHARMACY_INDEX
-- Medicine  -> PINECONE_MEDICINE_INDEX (generic.csv + medicine.csv + dosage_form.csv + drug_class.csv + indication.csv + manufacturer.csv)
+- Medicine  -> PINECONE_MEDICINE_INDEX (CSV files from Web Scrape directory)
 - BD PDFs   -> via scripts/ingest_pdfs_bd.py (namespaced into arobot-bd-pharmacy)
 - Anatomy   -> via scripts/ingest_anatomy_images.py (CLIP -> arobot-clip)
 """
@@ -134,13 +134,17 @@ def setup_pdf_knowledge_base() -> bool:
 
 
 # --------------------------------------------------------------------------------------
-# Medicine KB (extended to use 6 CSVs)
+# Medicine KB (extended to use available CSVs)
 # --------------------------------------------------------------------------------------
 
 def _load_base_tables() -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Load the original generic + medicine base tables."""
+    """Load the original generic + medicine base tables if they exist."""
     generic_path = WEB_SCRAPE_DIR / "generic.csv"
     medicine_path = WEB_SCRAPE_DIR / "medicine.csv"
+
+    if not generic_path.exists() or not medicine_path.exists():
+        logger.warning(f"Base medicine CSVs not found: {generic_path}, {medicine_path}")
+        return pd.DataFrame(), pd.DataFrame()
 
     logger.info(f"Reading: {generic_path}")
     logger.info(f"Reading: {medicine_path}")
@@ -153,9 +157,11 @@ def _load_base_tables() -> Tuple[pd.DataFrame, pd.DataFrame]:
     med_key = _first_present(medicine_df, ["generic", "generic name"])
 
     if not gen_key:
-        raise KeyError("generic.csv needs a 'generic name' (or 'generic') column.")
+        logger.warning("generic.csv doesn't have a 'generic name' (or 'generic') column.")
+        return pd.DataFrame(), pd.DataFrame()
     if not med_key:
-        raise KeyError("medicine.csv needs a 'generic' (or 'generic name') column.")
+        logger.warning("medicine.csv doesn't have a 'generic' (or 'generic name') column.")
+        return pd.DataFrame(), pd.DataFrame()
 
     # normalize join keys as 'generic'
     generic_df = generic_df.rename(columns={gen_key: "generic"})
@@ -179,20 +185,43 @@ def _load_base_tables() -> Tuple[pd.DataFrame, pd.DataFrame]:
 
 def _load_enrichment_tables() -> Dict[str, pd.DataFrame]:
     """
-    Load dosage_form.csv, drug_class.csv, indication.csv, manufacturer.csv
-    and normalize likely columns into a tidy shape.
+    Load available enrichment CSVs dynamically:
+    dosage_form.csv, drug_class.csv, indication.csv, manufacturer.csv
     """
-    files = {
+    csv_files = {
         "dosage_form": WEB_SCRAPE_DIR / "dosage_form.csv",
         "drug_class": WEB_SCRAPE_DIR / "drug_class.csv",
         "indication": WEB_SCRAPE_DIR / "indication.csv",
         "manufacturer": WEB_SCRAPE_DIR / "manufacturer.csv",
     }
+    
     dfs: Dict[str, pd.DataFrame] = {}
-    for label, path in files.items():
-        logger.info(f"Reading: {path}")
-        dfs[label] = _read_csv_safe(path)
+    for label, path in csv_files.items():
+        if path.exists():
+            logger.info(f"Reading: {path}")
+            try:
+                dfs[label] = _read_csv_safe(path)
+            except Exception as e:
+                logger.warning(f"Failed to read {path}: {e}")
+                dfs[label] = pd.DataFrame()
+        else:
+            logger.info(f"CSV not found, skipping: {path}")
+            dfs[label] = pd.DataFrame()
+    
     return dfs
+
+
+def _discover_csv_files() -> List[Path]:
+    """Discover all CSV files in the Web Scrape directory."""
+    if not WEB_SCRAPE_DIR.exists():
+        logger.warning(f"Web Scrape directory not found: {WEB_SCRAPE_DIR}")
+        return []
+    
+    csv_files = list(WEB_SCRAPE_DIR.glob("*.csv"))
+    logger.info(f"Discovered {len(csv_files)} CSV files in {WEB_SCRAPE_DIR}")
+    for csv_file in csv_files:
+        logger.info(f"  - {csv_file.name}")
+    return csv_files
 
 
 def _tidy_dosage_form(df: pd.DataFrame) -> pd.DataFrame:
@@ -255,14 +284,18 @@ def _merge_medicine_tables(
     enrichment: Dict[str, pd.DataFrame],
 ) -> pd.DataFrame:
     """
-    Merge generic+medicine with (dosage_form, drug_class, indication, manufacturer).
+    Merge generic+medicine with available enrichment tables.
     Join primarily on 'generic'; where brand exists we create brand-level variants too.
     """
+    if generic_df.empty or medicine_df.empty:
+        logger.warning("Base tables are empty, cannot merge")
+        return pd.DataFrame()
+
     # tidy enrichment tables
-    df_form = _tidy_dosage_form(enrichment["dosage_form"])
-    df_class = _tidy_drug_class(enrichment["drug_class"])
-    df_ind = _tidy_indication(enrichment["indication"])
-    df_manu = _tidy_manufacturer(enrichment["manufacturer"])
+    df_form = _tidy_dosage_form(enrichment.get("dosage_form", pd.DataFrame()))
+    df_class = _tidy_drug_class(enrichment.get("drug_class", pd.DataFrame()))
+    df_ind = _tidy_indication(enrichment.get("indication", pd.DataFrame()))
+    df_manu = _tidy_manufacturer(enrichment.get("manufacturer", pd.DataFrame()))
 
     # base left-join by generic
     merged = pd.merge(
@@ -271,7 +304,7 @@ def _merge_medicine_tables(
 
     # generic-level merges (collapse multiple rows per generic)
     def collapse_generic_levels(df: pd.DataFrame, value_col: str) -> pd.DataFrame:
-        if "generic" not in df.columns or value_col not in df.columns:
+        if df.empty or "generic" not in df.columns or value_col not in df.columns:
             return pd.DataFrame(columns=["generic", value_col])
         agg = df.groupby("generic", dropna=True)[value_col].apply(_aggregate_grouped).reset_index()
         return agg
@@ -299,7 +332,7 @@ def _merge_medicine_tables(
 
         # brand enrich
         def collapse_brand_levels(df: pd.DataFrame, value_col: str) -> pd.DataFrame:
-            if "brand" not in df.columns or value_col not in df.columns:
+            if df.empty or "brand" not in df.columns or value_col not in df.columns:
                 return pd.DataFrame(columns=["brand", value_col])
             agg = df.groupby("brand", dropna=True)[value_col].apply(_aggregate_grouped).reset_index()
             return agg
@@ -379,18 +412,23 @@ def _build_medicine_description(row: pd.Series) -> str:
 
 def setup_medicine_knowledge_base() -> bool:
     """
-    Setup medicine CSV knowledge base in Pinecone from:
-      Web Scrape/generic.csv
-      Web Scrape/medicine.csv
-      Web Scrape/dosage_form.csv
-      Web Scrape/drug_class.csv
-      Web Scrape/indication.csv
-      Web Scrape/manufacturer.csv
+    Setup medicine CSV knowledge base in Pinecone from available CSV files
+    in the Web Scrape directory.
     """
     try:
-        logger.info("💊 Setting up medicine knowledge base (extended)…")
+        logger.info("💊 Setting up medicine knowledge base (dynamic)…")
+
+        # Discover available CSV files
+        csv_files = _discover_csv_files()
+        if not csv_files:
+            logger.warning("No CSV files found in Web Scrape directory")
+            return False
 
         generic_df, medicine_df = _load_base_tables()
+        if generic_df.empty and medicine_df.empty:
+            logger.warning("No base medicine tables found, cannot proceed")
+            return False
+
         enrichment = _load_enrichment_tables()
 
         merged = _merge_medicine_tables(generic_df, medicine_df, enrichment)
