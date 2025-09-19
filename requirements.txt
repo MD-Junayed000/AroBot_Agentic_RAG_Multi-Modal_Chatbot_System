@@ -64,10 +64,6 @@ rapidfuzz>=3.1.1
 # CLIP (OpenAI)
 git+https://github.com/openai/CLIP.git
 
-# Weather
-openmeteo-requests
-requests-cache
-retry-requests
 
 
 # Add these if you want enhanced performance/caching

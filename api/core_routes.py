@@ -99,24 +99,6 @@ def _resolve_or_bind_session(client_id: str) -> str:
     except Exception:
         return client_id
 
-# Helper functions for weather detection
-def _looks_like_weather(message: str) -> bool:
-    """Check if message is asking about weather"""
-    weather_terms = ["weather", "temperature", "rain", "sunny", "cloudy", "forecast"]
-    return any(term in message.lower() for term in weather_terms)
-
-def _get_weather_text(lat: float, lon: float) -> str:
-    """Get weather information"""
-    try:
-        from utils.weather_utils import get_weather_data
-        weather_data = get_weather_data(lat, lon)
-        if weather_data:
-            return f"Weather for {lat:.2f}, {lon:.2f}: {weather_data}"
-        else:
-            return f"Weather information for coordinates {lat:.2f}, {lon:.2f} is currently unavailable."
-    except Exception as e:
-        logger.exception("Error getting weather")
-        return f"Weather service error: {str(e)}"
 
 # --------------------------------------------------------------------------------------
 # UI Routes
@@ -371,19 +353,6 @@ async def search_medicine(req: MedicineQuery):
 # --------------------------------------------------------------------------------------
 # Weather
 # --------------------------------------------------------------------------------------
-@router.get("/weather")
-async def get_weather(lat: float = 40.73061, lon: float = -73.935242):
-    """Get weather information for coordinates"""
-    try:
-        weather_text = _get_weather_text(lat, lon)
-        return {
-            "weather": weather_text,
-            "coordinates": {"lat": lat, "lon": lon},
-            "status": "success"
-        }
-    except Exception as e:
-        logger.exception("Error getting weather")
-        raise HTTPException(status_code=500, detail=str(e))
 
 # --------------------------------------------------------------------------------------
 # Admin routes moved to api/routes/admin.py

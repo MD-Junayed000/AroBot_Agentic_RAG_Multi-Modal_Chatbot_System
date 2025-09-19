@@ -1130,29 +1130,6 @@ class LLMAgent:
         
         return anatomy_terms[:3]  # Return max 3 terms
     
-    @tool(
-        name="get_weather",
-        description="Get current weather information for a location. Use when users ask about weather conditions.",
-        category="utility",
-        priority=2
-    )
-    @traceable(name="get_weather_tool")
-    async def _tool_get_weather(self, query: str) -> Dict[str, Any]:
-        """Get weather information"""
-        try:
-            import re
-            # Extract coordinates if present
-            match = re.search(r"(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)", query)
-            if match:
-                lat, lon = float(match.group(1)), float(match.group(2))
-            else:
-                lat, lon = 40.73061, -73.935242  # Default NYC
-            
-            # Simple weather response (you can enhance this)
-            response = f"Weather information for coordinates {lat:.2f}, {lon:.2f}: Current conditions available via weather API."
-            return {"response": response}
-        except Exception as e:
-            return {"error": str(e)}
     
     @tool(
         name="get_medicine_info",
@@ -1641,8 +1618,6 @@ class LLMAgent:
         # Extract key terms from input
         input_lower = input_description.lower()
         key_terms = []
-        if "weather" in input_lower:
-            key_terms.append("weather")
         if any(term in input_lower for term in ["medicine", "drug", "medication"]):
             key_terms.append("medicine")
         if any(term in input_lower for term in ["what", "how", "why", "explain"]):
@@ -1670,8 +1645,6 @@ class LLMAgent:
             return [{"name": "analyze_image", "reason": "Image input detected", "parameters": {}}]
         elif "PDF file" in input_description:
             return [{"name": "analyze_pdf", "reason": "PDF input detected", "parameters": {}}]
-        elif any(term in input_description.lower() for term in ["weather", "temperature", "rain", "sunny"]):
-            return [{"name": "get_weather", "reason": "Weather query detected", "parameters": {}}]
 
         # For text queries, use improved LLM selection
         tools_summary = self._get_tools_summary()
@@ -1687,7 +1660,6 @@ CONTEXT: {conversation_context[-200:] if conversation_context else 'No recent co
 SELECTION RULES:
 1. For medical questions/symptoms or policy/regulation topics → analyze_text
 2. For drug/medicine-specific information (dosage, brands, prices) → get_medicine_info  
-3. For weather questions → get_weather
 4. For general chat/greetings → analyze_text
 5. For memory/history questions → access_memory
 
@@ -1756,7 +1728,6 @@ Selection:"""
         tools = [
             "analyze_text: Medical questions, symptoms, general health queries",
             "get_medicine_info: Drug information, prices, Bangladesh brands",
-            "get_weather: Weather conditions and forecasts",
             "access_memory: Previous conversation history",
             "web_search: Current information not in knowledge base"
         ]
@@ -1789,8 +1760,6 @@ Selection:"""
             return [{"name": "analyze_text", "reason": "Policy or regulation query detected", "parameters": {}}]
         elif any(term in input_lower for term in ["medicine", "drug", "medication", "tablet", "mg", "dosage", "dose", "capsule", "syrup"]):
             return [{"name": "get_medicine_info", "reason": "Medicine query detected", "parameters": {}}]
-        elif any(term in input_lower for term in ["weather", "temperature", "rain", "sunny"]):
-            return [{"name": "get_weather", "reason": "Weather query detected", "parameters": {}}]
         elif any(term in input_lower for term in ["hello", "hi", "hey", "good morning", "good evening"]):
             return [{"name": "analyze_text", "reason": "Greeting detected", "parameters": {}}]
         elif any(term in input_lower for term in ["anatomy", "human body", "organ", "muscle", "bone"]):
@@ -1829,12 +1798,12 @@ Selection:"""
                     result = await tool.function(image_data, text_input, session_id)
                 elif tool_name == "analyze_pdf" and pdf_data:
                     result = await tool.function(pdf_data, text_input, session_id)
-                elif tool_name == "get_weather" and text_input:
-                    result = await tool.function(text_input)
                 elif tool_name == "get_medicine_info" and text_input:
                     result = await tool.function(text_input, False)
                 elif tool_name == "access_memory" and text_input:
                     result = await tool.function(text_input, session_id)
+                elif tool_name == "web_search" and text_input:
+                    result = await tool.function(text_input)
                 else:
                     result = {"error": f"Tool {tool_name} cannot be executed with provided inputs"}
                 

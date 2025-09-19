@@ -138,7 +138,6 @@ class ToolRequest(BaseModel):
             'get_medicine_info',
             'web_search',
             'access_memory',
-            'get_weather'
         ]
         
         if v not in allowed_tools:
