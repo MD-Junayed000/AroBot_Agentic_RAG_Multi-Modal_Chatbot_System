@@ -1417,6 +1417,143 @@ class LLMAgent:
         except Exception as e:
             return {"error": f"Web search failed: {str(e)}"}
     
+    @tool(
+        name="analyze_pdf",
+        description="Analyze PDF documents, extract text content, and answer questions based on PDF content. Use for PDF document analysis and Q&A.",
+        category="document",
+        priority=4
+    )
+    @traceable(name="analyze_pdf_tool")
+    async def _tool_analyze_pdf(self, pdf_data: bytes, question: Optional[str] = None, session_id: Optional[str] = None) -> Dict[str, Any]:
+        """Analyze PDF documents and extract information"""
+        try:
+            import tempfile
+            import fitz  # PyMuPDF
+            from pathlib import Path
+            
+            # Validate PDF data
+            if not pdf_data or len(pdf_data) < 100:
+                return {"error": "Invalid or empty PDF data"}
+            
+            # Check PDF header
+            if not pdf_data.startswith(b'%PDF'):
+                return {"error": "File does not appear to be a valid PDF"}
+            
+            # Create temporary file for PDF processing
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as temp_file:
+                temp_file.write(pdf_data)
+                temp_file_path = temp_file.name
+            
+            try:
+                # Extract text from PDF using PyMuPDF
+                doc = fitz.open(temp_file_path)
+                extracted_text = ""
+                page_count = len(doc)
+                
+                # Extract text from each page
+                for page_num in range(page_count):
+                    page = doc[page_num]
+                    page_text = page.get_text("text")
+                    
+                    if page_text.strip():
+                        extracted_text += f"\n--- Page {page_num + 1} ---\n{page_text.strip()}\n"
+                
+                doc.close()
+                
+                # Clean up temporary file
+                Path(temp_file_path).unlink(missing_ok=True)
+                
+                # Check if we extracted any text
+                if not extracted_text.strip():
+                    # Try OCR fallback if available
+                    try:
+                        import pytesseract
+                        from PIL import Image
+                        
+                        doc = fitz.open(temp_file_path)
+                        ocr_text = ""
+                        
+                        for page_num in range(min(3, page_count)):  # OCR first 3 pages max
+                            page = doc[page_num]
+                            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 2x for better OCR
+                            img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("L")
+                            page_ocr = pytesseract.image_to_string(img)
+                            
+                            if page_ocr.strip():
+                                ocr_text += f"\n--- Page {page_num + 1} (OCR) ---\n{page_ocr.strip()}\n"
+                        
+                        doc.close()
+                        extracted_text = ocr_text
+                        
+                    except ImportError:
+                        return {
+                            "error": "PDF appears to be scanned/image-based but OCR is not available. Please install pytesseract for scanned PDF support.",
+                            "status": "ocr_unavailable"
+                        }
+                    except Exception as ocr_e:
+                        logger.warning(f"OCR fallback failed: {ocr_e}")
+                        return {
+                            "error": "Could not extract text from PDF. It may be scanned or image-based.",
+                            "status": "text_extraction_failed"
+                        }
+                
+                # Generate response based on extracted text
+                if question and question.strip():
+                    # Answer specific question about PDF content
+                    response = self.llm.answer_over_pdf_text(question, extracted_text)
+                    
+                    return {
+                        "response": response,
+                        "extracted_text": extracted_text[:1000] + "..." if len(extracted_text) > 1000 else extracted_text,
+                        "page_count": page_count,
+                        "text_length": len(extracted_text),
+                        "question": question,
+                        "status": "success"
+                    }
+                else:
+                    # Provide summary of PDF content
+                    summary_prompt = f"""Provide a concise summary of this document content:
+
+DOCUMENT CONTENT:
+{extracted_text[:4000]}{'...' if len(extracted_text) > 4000 else ''}
+
+Please provide:
+1. Main topic/subject of the document
+2. Key points or findings (3-5 bullet points)
+3. Type of document (research paper, report, manual, etc.)
+4. Any important conclusions or recommendations
+
+Keep the summary clear and informative."""
+                    
+                    from core.prompts.system import get_system_prompt
+                    summary_response = self.llm.text_gen.generate_response(
+                        summary_prompt,
+                        system_prompt=get_system_prompt("medical")
+                    )
+                    
+                    return {
+                        "response": f"**PDF Document Analysis**\n\n{summary_response}\n\n*Document contains {page_count} pages with {len(extracted_text)} characters of text.*",
+                        "extracted_text": extracted_text[:1000] + "..." if len(extracted_text) > 1000 else extracted_text,
+                        "page_count": page_count,
+                        "text_length": len(extracted_text),
+                        "status": "success"
+                    }
+                    
+            except Exception as processing_error:
+                # Clean up temporary file on error
+                try:
+                    Path(temp_file_path).unlink(missing_ok=True)
+                except:
+                    pass
+                raise processing_error
+                
+        except Exception as e:
+            logger.exception(f"Error in PDF analysis tool: {e}")
+            return {
+                "error": f"Failed to analyze PDF: {str(e)}",
+                "status": "error"
+            }
+    
     def get_tools_description(self) -> str:
         """Get a formatted description of all available tools"""
         return self.registry.get_tool_descriptions()
