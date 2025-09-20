@@ -21,7 +21,7 @@ PINECONE_IMAGE_INDEX=arobot-clip
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_TEXT_MODEL=llama3.2:3b
 OLLAMA_VISION_MODEL=llava:7b
-OLLAMA_FAST_TEXT_MODEL=llama3.2:3b
+
 
 # App Configuration
 DEBUG=false

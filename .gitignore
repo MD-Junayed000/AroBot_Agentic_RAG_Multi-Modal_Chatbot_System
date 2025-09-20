@@ -207,5 +207,7 @@ marimo/_lsp/
 __marimo__/
 
 
-
+## pdf and data
 data/pdfs/
+## memeory session
+memory/
